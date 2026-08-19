@@ -2300,43 +2300,48 @@ window.subscribeToRemoteChanges = function (callback) {
 };
 
 fbAuth.onAuthStateChanged(async function(user) {
-  if (!user) {
+  try {
+    if (!user) {
+      document.getElementById('login-loading').style.display = 'none';
+      showLoginScreen();
+      return;
+    }
+
+    const isAdmin = user.email === ADMIN_EMAIL;
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('login-loading').style.display = 'flex';
+
+    if (isAdmin) {
+      fbDb.ref('sharedTravelConfig/ownerUID').set(user.uid).catch(function(){});
+      fbDb.ref('sharedTravelConfig/allowedEmails/' + sanitizeEmail(user.email)).set({ email: user.email }).catch(function(){});
+      window.__fbRef = fbDb.ref('travelManager/' + user.uid + '/' + STORAGE_KEY);
+      document.getElementById('login-loading').style.display = 'none';
+      root.render(React.createElement(TravelManager, { isAdmin: true }));
+      return;
+    }
+
+    var emailKey = sanitizeEmail(user.email);
+    var allowedSnap = await fbDb.ref('sharedTravelConfig/allowedEmails/' + emailKey).once('value');
+    if (!allowedSnap.exists()) {
+      fbAuth.signOut();
+      showLoginScreen('このアカウント（' + user.email + '）はアクセスできません。管理者に招待を依頼してください。');
+      return;
+    }
+
+    var ownerUIDSnap = await fbDb.ref('sharedTravelConfig/ownerUID').once('value');
+    var ownerUID = ownerUIDSnap.val();
+    if (!ownerUID) {
+      showLoginScreen('管理者が一度もログインしていません。先に管理者がログインしてください。');
+      return;
+    }
+
+    window.__fbRef = fbDb.ref('travelManager/' + ownerUID + '/' + STORAGE_KEY);
     document.getElementById('login-loading').style.display = 'none';
-    showLoginScreen();
-    return;
-  }
-
-  const isAdmin = user.email === ADMIN_EMAIL;
-  document.getElementById('login-screen').style.display = 'none';
-  document.getElementById('login-loading').style.display = 'flex';
-
-  if (isAdmin) {
-    await fbDb.ref('sharedTravelConfig/ownerUID').set(user.uid);
-    await fbDb.ref('sharedTravelConfig/allowedEmails/' + sanitizeEmail(user.email)).set({ email: user.email });
-    window.__fbRef = fbDb.ref('travelManager/' + user.uid + '/' + STORAGE_KEY);
+    root.render(React.createElement(TravelManager, { isAdmin: false }));
+  } catch(e) {
     document.getElementById('login-loading').style.display = 'none';
-    root.render(React.createElement(TravelManager, { isAdmin: true }));
-    return;
+    showLoginScreen('エラーが発生しました。Firebase rules の更新が必要な可能性があります。');
   }
-
-  var emailKey = sanitizeEmail(user.email);
-  var allowedSnap = await fbDb.ref('sharedTravelConfig/allowedEmails/' + emailKey).once('value');
-  if (!allowedSnap.exists()) {
-    fbAuth.signOut();
-    showLoginScreen('このアカウント（' + user.email + '）はアクセスできません。管理者に招待を依頼してください。');
-    return;
-  }
-
-  var ownerUIDSnap = await fbDb.ref('sharedTravelConfig/ownerUID').once('value');
-  var ownerUID = ownerUIDSnap.val();
-  if (!ownerUID) {
-    showLoginScreen('管理者が一度もログインしていません。先に管理者がログインしてください。');
-    return;
-  }
-
-  window.__fbRef = fbDb.ref('travelManager/' + ownerUID + '/' + STORAGE_KEY);
-  document.getElementById('login-loading').style.display = 'none';
-  root.render(React.createElement(TravelManager, { isAdmin: false }));
 });
 </script>
 </body>
