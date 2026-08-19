@@ -2330,6 +2330,9 @@ fbAuth.onAuthStateChanged(async function(user) {
       return;
     }
 
+    // UIDを登録してFirebase rulesのアクセスを有効化
+    fbDb.ref('sharedTravelConfig/allowedUIDs/' + user.uid).set({ email: user.email }).catch(function(){});
+
     var ownerUIDSnap = await fbDb.ref('sharedTravelConfig/ownerUID').once('value');
     var ownerUID = ownerUIDSnap.val();
     if (!ownerUID) {
