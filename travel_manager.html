@@ -67,6 +67,9 @@ async function storageSet(key, value) {
   }
 }
 
+function sanitizeEmail(email) { return email.replace(/\./g, ','); }
+function desanitizeEmail(s) { return s.replace(/,/g, '.'); }
+
 function IconBase({ size = 18, className, style, color, children }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color || "currentColor"}
@@ -1719,7 +1722,85 @@ function PackingPage({ data, setData }) {
   );
 }
 
-function TravelManager() {
+function UsersIcon(props) {
+  return <IconBase {...props}>
+    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </IconBase>;
+}
+
+function AdminPanel({ onClose }) {
+  const [emails, setEmails] = useState([]);
+  const [newEmail, setNewEmail] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const db = window.__fbDb;
+    if (!db) return;
+    db.ref('sharedTravelConfig/allowedEmails').once('value').then(snap => {
+      const data = snap.val() || {};
+      setEmails(Object.values(data).map(v => v.email).filter(Boolean));
+      setLoading(false);
+    });
+  }, []);
+
+  const addEmail = async () => {
+    const email = newEmail.trim().toLowerCase();
+    if (!email || !email.includes('@') || emails.includes(email)) return;
+    setSaving(true);
+    await window.__fbDb.ref('sharedTravelConfig/allowedEmails/' + sanitizeEmail(email)).set({ email });
+    setEmails(prev => [...prev, email]);
+    setNewEmail('');
+    setSaving(false);
+  };
+
+  const removeEmail = async (email) => {
+    await window.__fbDb.ref('sharedTravelConfig/allowedEmails/' + sanitizeEmail(email)).remove();
+    setEmails(prev => prev.filter(e => e !== email));
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)' }} onClick={onClose}>
+      <div className="rounded-xl p-6 w-full max-w-md mx-4" style={{ background: '#FAF6EF', border: '1px solid #D9CEB8' }} onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-base font-bold" style={{ color: '#1E2A38' }}>ユーザー招待管理</h2>
+          <button onClick={onClose} style={{ color: '#9C9384' }}>✕</button>
+        </div>
+        <p className="text-xs mb-4" style={{ color: '#6B6459' }}>招待したいGmailアドレスを追加してください。追加後、そのアカウントでGoogleログインすると旅程データを共有できます。</p>
+        {loading ? (
+          <div className="text-xs text-center py-4" style={{ color: '#9C9384' }}>読み込み中…</div>
+        ) : (
+          <div className="space-y-2 mb-4 max-h-48 overflow-y-auto">
+            {emails.length === 0 && <p className="text-xs" style={{ color: '#9C9384' }}>招待中のユーザーはいません</p>}
+            {emails.map(email => (
+              <div key={email} className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ background: '#EEE9DF' }}>
+                <span className="text-sm">{email}</span>
+                <button onClick={() => removeEmail(email)} className="ml-2" style={{ color: '#9C9384' }}><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input
+            className="border rounded px-3 py-2 text-sm flex-1"
+            placeholder="example@gmail.com"
+            value={newEmail}
+            onChange={e => setNewEmail(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && addEmail()}
+          />
+          <button onClick={addEmail} disabled={saving} className="px-4 py-2 rounded text-sm text-white" style={{ background: '#3E7C7B', opacity: saving ? 0.6 : 1 }}>
+            {saving ? '…' : '追加'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TravelManager({ isAdmin }) {
   const [tab, setTab] = useState("itinerary");
   const [itinerary, setItinerary] = useState(seedItinerary);
   const [hotels, setHotels] = useState(seedHotels);
@@ -1995,6 +2076,7 @@ function TravelManager() {
     return lines.join("\n");
   };
 
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [copyState, setCopyState] = useState("idle");
   const copySummary = async () => {
     const text = buildSummaryText();
@@ -2066,6 +2148,7 @@ function TravelManager() {
 
   return (
     <div style={{ background: "#FAF6EF", minHeight: "100vh", fontFamily: "ui-sans-serif, system-ui, -apple-system, sans-serif" }}>
+      {showAdminPanel && <AdminPanel onClose={() => setShowAdminPanel(false)} />}
       <div style={{ background: "#1E2A38" }} className="text-white px-4 sm:px-8 pt-6 pb-0">
         <div className="flex justify-between items-start">
           <div>
@@ -2073,6 +2156,11 @@ function TravelManager() {
             <h1 className="text-3xl" style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}>ヨーロッパ周遊 旅程管理</h1>
           </div>
           <div className="flex items-center gap-3">
+            {isAdmin && (
+              <button onClick={() => setShowAdminPanel(true)} className="flex items-center gap-1 text-xs opacity-70 hover:opacity-100" title="ユーザー招待管理">
+                <UsersIcon size={14} /> ユーザー管理
+              </button>
+            )}
             <button onClick={copySummary} className="flex items-center gap-1 text-xs opacity-70 hover:opacity-100">
               <Copy size={14} /> {copyState === "copied" ? "コピーしました" : copyState === "error" ? "コピー失敗" : "AI共有用にコピー"}
             </button>
@@ -2172,8 +2260,7 @@ const FIREBASE_CONFIG = {
   appId:             "1:723106493500:web:b8a1e33712bae2652dbf39"
 };
 
-// ログインを許可するGoogleアカウントのメールアドレス
-const ALLOWED_EMAIL = "genereoyuna@gmail.com";
+const ADMIN_EMAIL = "genereoyuna@gmail.com";
 
 let fbAuth = null;
 let fbDb = null;
@@ -2181,6 +2268,7 @@ let fbDb = null;
 firebase.initializeApp(FIREBASE_CONFIG);
 fbAuth = firebase.auth();
 fbDb = firebase.database();
+window.__fbDb = fbDb;
 
 function showLoginScreen(errorMsg) {
   document.getElementById('login-loading').style.display = 'none';
@@ -2211,26 +2299,44 @@ window.subscribeToRemoteChanges = function (callback) {
   });
 };
 
-fbAuth.onAuthStateChanged(user => {
+fbAuth.onAuthStateChanged(async function(user) {
   if (!user) {
     document.getElementById('login-loading').style.display = 'none';
     showLoginScreen();
     return;
   }
 
-  if (user.email !== ALLOWED_EMAIL) {
-    fbAuth.signOut();
-    showLoginScreen('このアカウント（' + user.email + '）はアクセスできません。');
-    return;
-  }
-
+  const isAdmin = user.email === ADMIN_EMAIL;
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('login-loading').style.display = 'flex';
 
-  window.__fbRef = fbDb.ref('travelManager/' + user.uid + '/' + STORAGE_KEY);
+  if (isAdmin) {
+    await fbDb.ref('sharedTravelConfig/ownerUID').set(user.uid);
+    await fbDb.ref('sharedTravelConfig/allowedEmails/' + sanitizeEmail(user.email)).set({ email: user.email });
+    window.__fbRef = fbDb.ref('travelManager/' + user.uid + '/' + STORAGE_KEY);
+    document.getElementById('login-loading').style.display = 'none';
+    root.render(React.createElement(TravelManager, { isAdmin: true }));
+    return;
+  }
 
+  var emailKey = sanitizeEmail(user.email);
+  var allowedSnap = await fbDb.ref('sharedTravelConfig/allowedEmails/' + emailKey).once('value');
+  if (!allowedSnap.exists()) {
+    fbAuth.signOut();
+    showLoginScreen('このアカウント（' + user.email + '）はアクセスできません。管理者に招待を依頼してください。');
+    return;
+  }
+
+  var ownerUIDSnap = await fbDb.ref('sharedTravelConfig/ownerUID').once('value');
+  var ownerUID = ownerUIDSnap.val();
+  if (!ownerUID) {
+    showLoginScreen('管理者が一度もログインしていません。先に管理者がログインしてください。');
+    return;
+  }
+
+  window.__fbRef = fbDb.ref('travelManager/' + ownerUID + '/' + STORAGE_KEY);
   document.getElementById('login-loading').style.display = 'none';
-  root.render(React.createElement(TravelManager));
+  root.render(React.createElement(TravelManager, { isAdmin: false }));
 });
 </script>
 </body>
