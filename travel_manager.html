@@ -1,0 +1,2223 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ヨーロッパ周遊 旅程管理</title>
+
+<!-- Googleマップ住所オートコンプリート（任意。YOUR_GOOGLE_MAPS_API_KEYを自分のキーに差し替え） -->
+<script src="https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY&libraries=places" async defer></script>
+
+<!-- Firebase（ログイン＋自動同期用。kakeiboアプリと同じプロジェクトを使用） -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; }
+  #login-screen { display: none; min-height: 100vh; align-items: center; justify-content: center; background: #FAF6EF; flex-direction: column; gap: 16px; }
+  #login-screen .card { background: #fff; border: 1px solid #D9CEB8; border-radius: 12px; padding: 32px; text-align: center; max-width: 320px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+  #login-screen h1 { font-size: 18px; margin-bottom: 8px; color: #1E2A38; }
+  #login-screen p { font-size: 13px; color: #6B6459; margin-bottom: 20px; }
+  #login-screen button { background: #1E2A38; color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font-size: 14px; cursor: pointer; width: 100%; }
+  #login-screen button:hover { opacity: 0.9; }
+  #login-error { color: #C1584C; font-size: 12px; margin-top: 12px; display: none; }
+  #login-loading { display: none; min-height: 100vh; align-items: center; justify-content: center; background: #FAF6EF; color: #6B6459; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<div id="login-loading">読み込み中…</div>
+<div id="login-screen">
+  <div class="card">
+    <h1>ヨーロッパ周遊 旅程管理</h1>
+    <p>登録済みのGoogleアカウントでログインしてください。データは自動でクラウドに保存・同期されます。</p>
+    <button onclick="signInWithGoogle()">Googleでログイン</button>
+    <div id="login-error"></div>
+  </div>
+</div>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+async function storageGet(key) {
+  if (!window.__fbRef) return null;
+  try {
+    const snap = await window.__fbRef.once('value');
+    const v = snap.val();
+    return v ? { value: JSON.stringify(v) } : null;
+  } catch (e) {
+    return null;
+  }
+}
+async function storageSet(key, value) {
+  if (!window.__fbRef) return null;
+  try {
+    const parsed = JSON.parse(value);
+    window.__fbLastSaved = JSON.stringify(parsed);
+    await window.__fbRef.set(parsed);
+    return { value };
+  } catch (e) {
+    return null;
+  }
+}
+
+function IconBase({ size = 18, className, style, color, children }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color || "currentColor"}
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      className={className} style={style}>
+      {children}
+    </svg>
+  );
+}
+function Plane(props) {
+  return <IconBase {...props}><path d="M2 12l19-8-6 8 6 8-19-8z" /><path d="M2 12h13" /></IconBase>;
+}
+function Train(props) {
+  return <IconBase {...props}>
+    <rect x="5" y="3" width="14" height="13" rx="3" />
+    <path d="M5 12h14" />
+    <path d="M8 19l-2 3M16 19l2 3" />
+    <circle cx="8" cy="16.5" r="1" fill="currentColor" />
+    <circle cx="16" cy="16.5" r="1" fill="currentColor" />
+  </IconBase>;
+}
+function Ship(props) {
+  return <IconBase {...props}>
+    <path d="M3 14l1.5 5c.2.6.8 1 1.5 1h12c.7 0 1.3-.4 1.5-1L21 14" />
+    <path d="M5 14l1-6h12l1 6" />
+    <path d="M12 8V3M9 3h6" />
+  </IconBase>;
+}
+function Bus(props) {
+  return <IconBase {...props}>
+    <rect x="4" y="4" width="16" height="13" rx="2" />
+    <path d="M4 11h16M8 17v2M16 17v2" />
+  </IconBase>;
+}
+function Hotel(props) {
+  return <IconBase {...props}>
+    <rect x="3" y="10" width="18" height="9" rx="1" />
+    <path d="M7 10V6a2 2 0 012-2h6a2 2 0 012 2v4" />
+    <path d="M3 15h18" />
+  </IconBase>;
+}
+function CalendarDays(props) {
+  return <IconBase {...props}>
+    <rect x="3" y="5" width="18" height="16" rx="2" />
+    <path d="M3 10h18M8 3v4M16 3v4" />
+    <path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01" />
+  </IconBase>;
+}
+function Wallet(props) {
+  return <IconBase {...props}>
+    <path d="M4 7a2 2 0 012-2h11a2 2 0 012 2v3" />
+    <rect x="3" y="7" width="18" height="13" rx="2" />
+    <path d="M16 13.5h2" />
+  </IconBase>;
+}
+function Backpack(props) {
+  return <IconBase {...props}>
+    <path d="M7 8V6a5 5 0 0110 0v2" />
+    <rect x="5" y="8" width="14" height="13" rx="3" />
+    <path d="M9 12h6M9 16h6" />
+  </IconBase>;
+}
+function MapPin(props) {
+  return <IconBase {...props}>
+    <path d="M12 21s-7-6.1-7-11a7 7 0 0114 0c0 4.9-7 11-7 11z" />
+    <circle cx="12" cy="10" r="2.5" />
+  </IconBase>;
+}
+function GanttChart(props) {
+  return <IconBase {...props}>
+    <path d="M4 4v16" />
+    <path d="M4 8h9M4 14h6" />
+    <path d="M4 20h13" />
+  </IconBase>;
+}
+function Plus(props) {
+  return <IconBase {...props}><path d="M12 5v14M5 12h14" /></IconBase>;
+}
+function Trash2(props) {
+  return <IconBase {...props}>
+    <path d="M4 7h16" /><path d="M6 7v13a1 1 0 001 1h10a1 1 0 001-1V7" />
+    <path d="M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3" />
+    <path d="M10 11v6M14 11v6" />
+  </IconBase>;
+}
+function ChevronDown(props) { return <IconBase {...props}><path d="M6 9l6 6 6-6" /></IconBase>; }
+function ChevronRight(props) { return <IconBase {...props}><path d="M9 6l6 6-6 6" /></IconBase>; }
+function Check(props) { return <IconBase {...props}><path d="M5 12l5 5L20 7" /></IconBase>; }
+function RotateCcw(props) {
+  return <IconBase {...props}>
+    <path d="M3 12a9 9 0 109-9 9.7 9.7 0 00-6.7 2.7L3 8" />
+    <path d="M3 3v5h5" />
+  </IconBase>;
+}
+function ArrowUp(props) { return <IconBase {...props}><path d="M12 19V5M5 12l7-7 7 7" /></IconBase>; }
+function ArrowDown(props) { return <IconBase {...props}><path d="M12 5v14M5 12l7 7 7-7" /></IconBase>; }
+function ArrowRightLeft(props) {
+  return <IconBase {...props}>
+    <path d="M16 3l4 4-4 4" /><path d="M20 7H4" />
+    <path d="M8 21l-4-4 4-4" /><path d="M4 17h16" />
+  </IconBase>;
+}
+function GripVertical(props) {
+  return <IconBase {...props}>
+    <circle cx="9" cy="6" r="1" fill="currentColor" /><circle cx="15" cy="6" r="1" fill="currentColor" />
+    <circle cx="9" cy="12" r="1" fill="currentColor" /><circle cx="15" cy="12" r="1" fill="currentColor" />
+    <circle cx="9" cy="18" r="1" fill="currentColor" /><circle cx="15" cy="18" r="1" fill="currentColor" />
+  </IconBase>;
+}
+function X(props) { return <IconBase {...props}><path d="M18 6L6 18M6 6l12 12" /></IconBase>; }
+function Download(props) {
+  return <IconBase {...props}>
+    <path d="M12 3v12M7 10l5 5 5-5" /><path d="M4 19h16" />
+  </IconBase>;
+}
+function Upload(props) {
+  return <IconBase {...props}>
+    <path d="M12 21V9M7 14l5-5 5 5" /><path d="M4 19h16" />
+  </IconBase>;
+}
+function Copy(props) {
+  return <IconBase {...props}>
+    <rect x="9" y="9" width="12" height="12" rx="2" />
+    <path d="M5 15V5a2 2 0 012-2h10" />
+  </IconBase>;
+}
+
+const MODE_ICON = { "飛行機": Plane, "鉄道": Train, "夜行列車": Train, "フェリー": Ship, "夜行フェリー": Ship, "バス": Bus };
+
+function calcDuration(dDate, dTime, dTZ, aDate, aTime, aTZ) {
+  if (!dDate || !dTime || !aDate || !aTime) return null;
+  const dUTC = new Date(`${dDate}T${dTime}:00Z`).getTime() - (Number(dTZ) || 0) * 3600000;
+  const aUTC = new Date(`${aDate}T${aTime}:00Z`).getTime() - (Number(aTZ) || 0) * 3600000;
+  const diffMs = aUTC - dUTC;
+  if (isNaN(diffMs) || diffMs < 0) return null;
+  const h = Math.floor(diffMs / 3600000);
+  const m = Math.round((diffMs % 3600000) / 60000);
+  return `所要 ${h}時間${m > 0 ? m + "分" : ""}`;
+}
+const WEEKDAY_JP = ["日", "月", "火", "水", "木", "金", "土"];
+function isoWeekday(iso) {
+  return new Date(iso + "T00:00:00Z").getUTCDay(); // 0=日
+}
+function wd(iso) {
+  return iso ? `(${WEEKDAY_JP[isoWeekday(iso)]})` : "";
+}
+function fmtDate(iso) {
+  if (!iso) return "";
+  const [, m, d] = iso.split("-");
+  return m && d ? `${Number(m)}/${Number(d)}${wd(iso)}` : iso;
+}
+function fmtTZ(tz) {
+  if (tz === "" || tz === undefined || tz === null) return "";
+  const n = Number(tz);
+  return `UTC${n >= 0 ? "+" : ""}${n}`;
+}
+
+// ---- カレンダーページ用の日付ユーティリティ ----
+const CAL_START = "2027-06-06";
+const CAL_END_EXCLUSIVE = "2027-07-26";
+function addDaysISO(iso, n) {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function fmtMD(iso) {
+  if (!iso) return "";
+  const [, m, d] = iso.split("-");
+  return m && d ? `${Number(m)}/${Number(d)}${wd(iso)}` : iso;
+}
+function computeDatesLabel(startISO, nights) {
+  const endISO = addDaysISO(startISO, Math.max(1, Number(nights) || 1));
+  return `${fmtMD(startISO)}-${fmtMD(endISO)}`;
+}
+
+const STORAGE_KEY = "travel-manager-data";
+
+const TIME_OPTIONS = Array.from({ length: 21 }, (_, i) => {
+  const h = 8 + Math.floor(i / 2);
+  const m = i % 2 === 0 ? "00" : "30";
+  return `${String(h).padStart(2, "0")}:${m}`;
+});
+const CODES = {
+  "ロンドン": "LON", "ブリュッセル": "BRU", "バルセロナ": "BCN", "ヴェネチア": "VCE",
+  "ミュンヘン": "MUC", "プラハ": "PRG", "ヨンショーピング（姉宅・ミッドサマー）": "JKG",
+  "ウィーン": "VIE", "ブダペスト": "BUD", "コペンハーゲン": "CPH", "ブラチスラヴァ": "BTS",
+  "ヨンショーピング（結婚式）": "JKG", "タリン": "TLL", "スプリット": "SPU",
+  "スリーマ（マルタ）": "MLA", "アテネ": "ATH", "ワルシャワ": "WAW", "クラクフ": "KRK",
+};
+
+
+const seedItinerary = [
+  { id: 1, type: "transit", mode: "飛行機", fromCity: "関西空港", toCity: "ロンドン(LHR)", departDate: "2027-06-08", departTime: "18:40", departTZ: 9, arriveDate: "2027-06-09", arriveTime: "07:00", arriveTZ: 1, airline: "エティハド航空（要再検索）", transitStops: "1都市経由", cls: "エコノミー Value", price: 196910, miles: true, memo: "2026年11月頃に航空券を確定予定。時刻・価格は前回確定分の参考値", status: "候補" },
+  { id: 2, type: "stay", dates: "6/9(水)-6/12(土)", city: "ロンドン", nights: 3, memo: "姉合流", status: "確定", startDate: "2027-06-09" },
+  { id: 26, type: "transit", mode: "鉄道", fromCity: "ロンドン", toCity: "ブリュッセル", departDate: "2027-06-12", departTime: "13:01", departTZ: 1, arriveDate: "2027-06-12", arriveTime: "16:05", arriveTZ: 2, airline: "EUROSTAR 9132", transitStops: "-", cls: "", price: 11348, miles: false, memo: "", status: "候補", paymentStatus: "未払い" },
+  { id: 3, type: "stay", dates: "6/12(土)-6/14(月)", city: "ブリュッセル", nights: 2, memo: "", status: "未確定", startDate: "2027-06-12" },
+  { id: 4, type: "transit", mode: "夜行列車", fromCity: "ブリュッセル", toCity: "プラハ", departDate: "2027-06-14", departTime: "19:20", departTZ: 2, arriveDate: "2027-06-15", arriveTime: "08:39", arriveTZ: 2, airline: "European Sleeper ES453", transitStops: "アムステルダム・ベルリン経由", cls: "クシェット/寝台", price: 0, miles: false, memo: "6/14は月曜＝運行日（月・水・金）に該当、確認済み", status: "候補" },
+  { id: 5, type: "stay", dates: "6/15(火)-6/19(土)", city: "プラハ", nights: 4, memo: "チェスキー・クルムロフ日帰り", status: "未確定", startDate: "2027-06-15" },
+  { id: 6, type: "transit", mode: "鉄道", fromCity: "プラハ", toCity: "ブラチスラヴァ", departDate: "2027-06-19", departTime: "08:00", departTZ: 2, arriveDate: "2027-06-19", arriveTime: "12:25", arriveTZ: 2, airline: "", transitStops: "-", cls: "", price: 0, miles: false, memo: "直行、約4時間25分。ウィーン経由の乗換なし", status: "候補" },
+  { id: 8, type: "stay", dates: "6/19(土)-6/21(月)", city: "ブラチスラヴァ", nights: 2, memo: "スロバキア。2日目（6/20）はウィーンへ日帰り（片道1時間、荷物はブラチスラヴァに置いて身軽に）", status: "未確定", startDate: "2027-06-19" },
+  { id: 9, type: "transit", mode: "鉄道", fromCity: "ブラチスラヴァ", toCity: "ブダペスト", departDate: "2027-06-21", departTime: "10:00", departTZ: 2, arriveDate: "2027-06-21", arriveTime: "12:30", arriveTZ: 2, airline: "", transitStops: "-", cls: "", price: 0, miles: false, memo: "約2.5時間", status: "候補" },
+  { id: 10, type: "stay", dates: "6/21(月)-6/23(水)", city: "ブダペスト", nights: 2, memo: "3泊→2泊に短縮（ロンドン着6/9化に伴う日数調整）", status: "未確定", startDate: "2027-06-21" },
+  { id: 11, type: "stay", dates: "6/23(水)-6/27(日)", city: "ヨンショーピング（姉宅・ミッドサマー）", nights: 4, memo: "固定日程", status: "確定", startDate: "2027-06-23" },
+  { id: 12, type: "stay", dates: "6/27(日)-6/29(火)", city: "バルセロナ", nights: 2, memo: "", status: "未確定", startDate: "2027-06-27" },
+  { id: 13, type: "stay", dates: "6/29(火)-7/1(木)", city: "ヴェネチア", nights: 2, memo: "ミュンヘンへの夜行列車が毎日運行・8時間56分で安定（ミラノは運休の可能性あり）", status: "未確定", startDate: "2027-06-29" },
+  { id: 14, type: "stay", dates: "7/1(木)-7/3(土)", city: "ミュンヘン", nights: 2, memo: "ノイシュヴァンシュタイン城 or ザルツブルク日帰り", status: "未確定", startDate: "2027-07-01" },
+  { id: 15, type: "stay", dates: "7/3(土)-7/5(月)", city: "コペンハーゲン", nights: 2, memo: "両親合流", status: "未確定", startDate: "2027-07-03" },
+  { id: 16, type: "transit", mode: "鉄道", fromCity: "コペンハーゲン", toCity: "ヨンショーピング", departDate: "2027-07-05", departTime: "10:00", departTZ: 2, arriveDate: "2027-07-05", arriveTime: "13:00", arriveTZ: 2, airline: "", transitStops: "-", cls: "", price: 0, miles: false, memo: "", status: "候補", paymentStatus: "未払い" },
+  { id: 17, type: "stay", dates: "7/5(月)-7/8(木)", city: "ヨンショーピング（結婚式）", nights: 3, memo: "固定日程・7/7結婚式。7/8夕方のフェリーで出発するため3泊（4泊→3泊に修正、Gemini指摘）", status: "確定", startDate: "2027-07-05" },
+  { id: 18, type: "transit", mode: "夜行フェリー", fromCity: "ヨンショーピング/ストックホルム", toCity: "タリン", departDate: "2027-07-08", departTime: "17:30", departTZ: 2, arriveDate: "2027-07-09", arriveTime: "09:00", arriveTZ: 3, airline: "Tallink（Baltic Queen）", transitStops: "-", cls: "B-Standard Inside個室", price: 37600, miles: false, memo: "2名合計206.60ユーロ（到着時刻は目安、要最新レート確認）", status: "候補" },
+  { id: 19, type: "stay", dates: "7/9(金)-7/10(土)", city: "タリン", nights: 1, memo: "フェリーが7/8夜発→7/9朝着のため、滞在は7/9からに修正", status: "未確定", startDate: "2027-07-09" },
+  { id: 20, type: "stay", dates: "7/10(土)-7/14(水)", city: "スプリット", nights: 4, memo: "ドゥブロブニク日帰り（飛行機）", status: "未確定", startDate: "2027-07-10" },
+  { id: 21, type: "stay", dates: "7/14(水)-7/18(日)", city: "アテネ", nights: 4, memo: "スプリット→アテネ→マルタの順に変更（スプリット→マルタの直行便が無いため）", status: "未確定", startDate: "2027-07-14" },
+  { id: 22, type: "stay", dates: "7/18(日)-7/21(水)", city: "スリーマ（マルタ）", nights: 3, memo: "タリン短縮分を+1泊", status: "未確定", startDate: "2027-07-18" },
+  { id: 23, type: "stay", dates: "7/21(水)-7/22(木)", city: "ワルシャワ", nights: 1, memo: "タリンの日程修正に伴い2泊→1泊に短縮", status: "未確定", startDate: "2027-07-21" },
+  { id: 24, type: "stay", dates: "7/22(木)-7/24(土)", city: "クラクフ", nights: 2, memo: "最終目的地", status: "確定", startDate: "2027-07-22" },
+  { id: 25, type: "transit", mode: "飛行機", fromCity: "クラクフ(KRK)", toCity: "関西空港", departDate: "2027-07-24", departTime: "11:20", departTZ: 2, arriveDate: "2027-07-25", arriveTime: "11:50", arriveTZ: 9, airline: "エティハド航空（要再検索）", transitStops: "1都市経由", cls: "エコノミー Value", price: 0, miles: true, memo: "上の行に合計金額を計上済み。2026年11月頃に確定予定", status: "候補" },
+];
+
+const seedHotels = [
+  { id: 1, linkedStayId: 5, city: "プラハ", name: "Praha 1のゲストルーム", checkin: "6/15", checkout: "6/19", nights: 4, guests: 1, perNight: 9927, total: 39707, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "Airbnb", url: "", confirmation: "", address: "", status: "予約済み（変更可能）", paymentStatus: "未払い" },
+  { id: 7, linkedStayId: 2, city: "ロンドン", name: "Eurotraveller Hotel- Express (Elephant & Castle)", checkin: "6/9", checkout: "6/12", nights: 3, guests: 2, perNight: 9007, total: 54041, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "予約済み（キャンセル無料）", paymentStatus: "未払い" },
+  { id: 2, linkedStayId: 12, city: "バルセロナ", name: "N8 専用バスルームとエアコン付きの客室", checkin: "6/27", checkout: "6/29", nights: 2, guests: 1, perNight: 11979, total: 23958, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "Airbnb", url: "", confirmation: "", address: "", status: "予約済み（キャンセル無料）", paymentStatus: "未払い" },
+  { id: 3, linkedStayId: 13, city: "ヴェネチア", name: "Anda Venice", checkin: "6/29", checkout: "7/1", nights: 2, guests: 1, perNight: 3478, total: 6956, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "予約済み（キャンセル無料）", paymentStatus: "未払い" },
+  { id: 4, linkedStayId: 22, city: "スリーマ（マルタ）", name: "", checkin: "7/18", checkout: "7/21", nights: 3, guests: 2, perNight: 9720, total: 58320, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "候補", paymentStatus: "未払い" },
+  { id: 8, linkedStayId: 24, city: "クラクフ", name: "", checkin: "7/22", checkout: "7/24", nights: 2, guests: 2, perNight: 6136, total: 24544, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "予約済み（キャンセル無料）", paymentStatus: "未払い" },
+  { id: 9, linkedStayId: 20, city: "スプリット", name: "", checkin: "7/10", checkout: "7/14", nights: 4, guests: 2, perNight: 8729, total: 69832, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "予約済み（キャンセル無料）", paymentStatus: "未払い" },
+  { id: 10, linkedStayId: 19, city: "タリン", name: "", checkin: "7/9", checkout: "7/10", nights: 1, guests: 2, perNight: 0, total: 0, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "候補", paymentStatus: "未払い" },
+  { id: 11, linkedStayId: 21, city: "アテネ", name: "", checkin: "7/14", checkout: "7/18", nights: 4, guests: 2, perNight: 0, total: 0, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "候補", paymentStatus: "未払い" },
+  { id: 12, linkedStayId: 23, city: "ワルシャワ", name: "", checkin: "7/21", checkout: "7/22", nights: 1, guests: 2, perNight: 0, total: 0, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "候補", paymentStatus: "未払い" },
+  { id: 5, linkedStayId: 15, city: "コペンハーゲン", name: "", checkin: "7/3", checkout: "7/5", nights: 2, guests: 3, perNight: 8750, total: 52500, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "予約済み（キャンセル無料）", paymentStatus: "未払い" },
+  { id: 6, linkedStayId: 3, city: "ブリュッセル", name: "Generation Europe Youth Hostel", checkin: "6/12", checkout: "6/14", nights: 2, guests: 1, perNight: 9720, total: 19440, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "予約済み（キャンセル無料）", paymentStatus: "未払い" },
+];
+
+const seedLocalTransport = [
+  { id: 1, linkedStayId: 22, category: "移動", desc: "コゾ島へ（Gozo Highspeed）", address: "", fromAddress: "Sliema Ferries, Sliema, Malta", toAddress: "Mġarr Harbour, Gozo, Malta", date: "2027-07-19", startTime: "08:45", endTime: "10:00", mode: "高速双胴船", price: 1600, needsBooking: true, memo: "", paymentStatus: "未払い" },
+  { id: 2, linkedStayId: 22, category: "移動", desc: "コゾ島から戻り（Gozo Highspeed）", address: "", fromAddress: "Mġarr Harbour, Gozo, Malta", toAddress: "Sliema Ferries, Sliema, Malta", date: "2027-07-19", startTime: "18:15", endTime: "19:30", mode: "高速双胴船", price: 1600, needsBooking: true, memo: "", paymentStatus: "未払い" },
+  { id: 3, linkedStayId: 22, category: "ツアー", desc: "マルタ5時間ヴィンテージバスツアー（イムディーナ＆青の洞窟、食事付）", address: "", date: "2027-07-20", startTime: "", endTime: "", mode: "ヴィンテージバス", price: 16628, needsBooking: true, memo: "評価4.7・358件レビュー、催行会社Cab Transfer malta。火・土運行のみ。時刻未定、24時間前までキャンセル無料", paymentStatus: "未払い" },
+];
+
+const BAGS = ["スーツケース", "リュック", "小さいバッグ"];
+const BAG_COLOR = { "スーツケース": "#1E2A38", "リュック": "#3E7C7B", "小さいバッグ": "#D9A441" };
+
+const seedPacking = {
+  "衣類": [
+    { id: 1, name: "動きやすいトップス（多め）", checked: false, bag: "スーツケース" },
+    { id: 2, name: "羽織り（夜行便・夜行フェリー用）", checked: false, bag: "リュック" },
+    { id: 3, name: "折りたたみ傘orレインウェア", checked: false, bag: "リュック" },
+  ],
+  "電子機器": [
+    { id: 4, name: "変換プラグ（英国・欧州両対応）", checked: false, bag: "リュック" },
+    { id: 5, name: "モバイルバッテリー", checked: false, bag: "リュック" },
+    { id: 6, name: "各種充電ケーブル", checked: false, bag: "リュック" },
+  ],
+  "書類": [
+    { id: 7, name: "パスポート（コピーも）", checked: false, bag: "小さいバッグ" },
+    { id: 8, name: "航空券・ホテル予約確認書", checked: false, bag: "小さいバッグ" },
+    { id: 9, name: "海外旅行保険証書", checked: false, bag: "小さいバッグ" },
+  ],
+  "常備薬・洗面用具": [
+    { id: 10, name: "普段飲んでいる薬", checked: false, bag: "リュック" },
+    { id: 11, name: "洗面用具一式（機内持込サイズ）", checked: false, bag: "スーツケース" },
+  ],
+  "その他": [
+    { id: 12, name: "サブバッグ（Pandoraチャーム等の買い物用）", checked: false, bag: "スーツケース" },
+  ],
+};
+
+const seedBudget = [
+  { id: 1, category: "移動費（飛行機・鉄道等）", target: 350000, auto: true },
+  { id: 2, category: "宿泊", target: 370000, auto: true },
+  { id: 3, category: "現地交通", target: 50000, auto: true },
+  { id: 4, category: "食費", target: 100000, auto: false, actual: 0 },
+  { id: 5, category: "観光・体験", target: 50000, auto: true },
+  { id: 6, category: "お土産・Pandoraチャーム", target: 80000, auto: false, actual: 0 },
+  { id: 7, category: "予備費", target: 50000, auto: false, actual: 0 },
+];
+
+function uid() { return Date.now() + Math.random(); }
+
+function Stub({ left, children }) {
+  return (
+    <div className="relative flex rounded-lg overflow-hidden border" style={{ borderColor: "#D9CEB8", background: "#FFFDF8" }}>
+      <div className="flex flex-col items-center justify-center px-4 py-3 text-white shrink-0" style={{ background: "#1E2A38", minWidth: "84px" }}>
+        {left}
+      </div>
+      <div className="flex-1 relative">
+        <div className="absolute left-0 top-0 bottom-0 border-l-2 border-dashed" style={{ borderColor: "#D9CEB8" }} />
+        <div className="p-3 pl-4">{children}</div>
+      </div>
+      <div className="absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full" style={{ background: "#FAF6EF", left: "84px", marginLeft: "-8px" }} />
+    </div>
+  );
+}
+
+function SectionHeader({ icon: Icon, title, subtitle }) {
+  return (
+    <div className="mb-5">
+      <div className="flex items-center gap-2">
+        <Icon size={22} style={{ color: "#3E7C7B" }} />
+        <h2 className="text-2xl" style={{ fontFamily: "Georgia, 'Times New Roman', serif", color: "#1E2A38" }}>{title}</h2>
+      </div>
+      {subtitle && <p className="text-sm mt-1" style={{ color: "#6B6459" }}>{subtitle}</p>}
+    </div>
+  );
+}
+
+function ItineraryPage({ data, setData }) {
+  const [openId, setOpenId] = useState(null);
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
+
+  const addStay = () => setData([...data, { id: uid(), type: "stay", dates: "", city: "", nights: "", memo: "", status: "未確定" }]);
+  const addTransit = () => setData([...data, { id: uid(), type: "transit", mode: "飛行機", fromCity: "", toCity: "", departDate: "", departTime: "", departTZ: 9, arriveDate: "", arriveTime: "", arriveTZ: 9, airline: "", transitStops: "", cls: "", price: 0, miles: false, memo: "", status: "候補", paymentStatus: "未払い" }]);
+  const update = (id, field, value) => setData(data.map(d => d.id === id ? { ...d, [field]: value } : d));
+  const updateFields = (id, patch) => setData(data.map(d => d.id === id ? { ...d, ...patch } : d));
+  const remove = (id) => setData(data.filter(d => d.id !== id));
+  const move = (idx, dir) => {
+    const next = [...data];
+    const target = idx + dir;
+    if (target < 0 || target >= next.length) return;
+    [next[idx], next[target]] = [next[target], next[idx]];
+    setData(next);
+  };
+  const sortKey = (row) => {
+    const iso = row.type === "transit" ? row.departDate : row.startDate;
+    return iso || "9999-99-99";
+  };
+  const sortByDate = () => {
+    const next = [...data].sort((a, b) => {
+      const ka = sortKey(a), kb = sortKey(b);
+      if (ka !== kb) return ka.localeCompare(kb);
+      if (a.type === b.type) return 0;
+      // 同じ日付なら「移動」を先、「滞在」を後にする（例：6/9移動→6/9からの滞在開始）
+      return a.type === "transit" ? -1 : 1;
+    });
+    setData(next);
+  };
+  const handleDrop = (idx) => {
+    if (dragIdx === null || dragIdx === idx) { setDragIdx(null); setOverIdx(null); return; }
+    const next = [...data];
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(idx, 0, moved);
+    setData(next);
+    setDragIdx(null);
+    setOverIdx(null);
+  };
+
+  return (
+    <div>
+      <SectionHeader icon={CalendarDays} title="日程表" subtitle="滞在と移動を時系列で並べます。移動は時差込みの所要時間も自動計算します" />
+      <div className="space-y-3">
+        {data.map((row, idx) => {
+          const isOpen = openId === row.id;
+          const moveButtons = (
+            <div className="flex flex-col items-center gap-1 shrink-0">
+              <div
+                draggable
+                onDragStart={() => setDragIdx(idx)}
+                onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+                className="cursor-grab active:cursor-grabbing text-gray-300 hover:text-gray-500 touch-none"
+                title="ドラッグして並べ替え"
+              >
+                <GripVertical size={16} />
+              </div>
+              <button onClick={() => move(idx, -1)} className="text-gray-300 hover:text-gray-500"><ArrowUp size={12} /></button>
+              <button onClick={() => move(idx, 1)} className="text-gray-300 hover:text-gray-500"><ArrowDown size={12} /></button>
+            </div>
+          );
+          const rowDragProps = {
+            onDragOver: (e) => { e.preventDefault(); if (overIdx !== idx) setOverIdx(idx); },
+            onDrop: (e) => { e.preventDefault(); handleDrop(idx); },
+          };
+          const isDragOver = overIdx === idx && dragIdx !== null && dragIdx !== idx;
+
+          if (row.type === "transit") {
+            const Icon = MODE_ICON[row.mode] || ArrowRightLeft;
+            const duration = calcDuration(row.departDate, row.departTime, row.departTZ, row.arriveDate, row.arriveTime, row.arriveTZ);
+            const tzDiff = (row.departTZ !== "" && row.arriveTZ !== "" && row.departTZ !== undefined && row.arriveTZ !== undefined)
+              ? Number(row.arriveTZ) - Number(row.departTZ) : null;
+            return (
+              <div key={row.id} className="flex items-center gap-2 rounded-lg transition-shadow" style={isDragOver ? { boxShadow: "0 0 0 2px #D9A441 inset" } : undefined} {...rowDragProps}>
+                {moveButtons}
+                <div className="flex-1 rounded-lg border-2 border-dashed" style={{ borderColor: "#3E7C7B", background: "#EFF6F5" }}>
+                  <div className="p-3">
+                    <button onClick={() => setOpenId(isOpen ? null : row.id)} className="flex items-start gap-2 w-full text-left">
+                      <Icon size={16} className="mt-0.5 shrink-0" style={{ color: "#3E7C7B" }} />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 flex-wrap text-sm">
+                          <span className="font-semibold" style={{ color: "#1E2A38" }}>{row.fromCity || "?"} → {row.toCity || "?"}</span>
+                          <span className="text-xs px-2 py-0.5 rounded-full text-white" style={{ background: row.status && row.status.startsWith("予約済み") ? "#3E7C7B" : "#D9A441" }}>{row.status}</span>
+                          {duration && <span className="ml-2">・{duration}</span>}
+                          {tzDiff !== null && tzDiff !== 0 && <span className="ml-2">・時差{tzDiff > 0 ? "+" : ""}{tzDiff}時間</span>}
+                        </div>
+                        <div className="text-xs mt-0.5" style={{ color: "#6B6459" }}>
+                          {row.airline && <span>{row.airline}</span>}
+                          {Number(row.price) > 0 && <span className="ml-2 font-semibold" style={{ color: "#1E2A38" }}>¥{Number(row.price).toLocaleString()}</span>}
+                        </div>
+                      </div>
+                      {isOpen ? <ChevronDown size={16} className="mt-1 shrink-0" /> : <ChevronRight size={16} className="mt-1 shrink-0" />}
+                    </button>
+                    {isOpen && (
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                        <select className="border rounded px-2 py-1 col-span-2" value={row.mode} onChange={e => update(row.id, "mode", e.target.value)}>
+                          <option>未定</option><option>飛行機</option><option>鉄道</option><option>夜行列車</option><option>フェリー</option><option>夜行フェリー</option><option>バス</option>
+                        </select>
+                        <input className="border rounded px-2 py-1" placeholder="出発地" value={row.fromCity} onChange={e => update(row.id, "fromCity", e.target.value)} />
+                        <input className="border rounded px-2 py-1" placeholder="到着地" value={row.toCity} onChange={e => update(row.id, "toCity", e.target.value)} />
+                        <div className="col-span-2 grid grid-cols-3 gap-1 items-center">
+                          <input type="date" className="border rounded px-2 py-1" value={row.departDate} onChange={e => update(row.id, "departDate", e.target.value)} />
+                          <input type="time" className="border rounded px-2 py-1" value={row.departTime} onChange={e => update(row.id, "departTime", e.target.value)} />
+                          <input type="number" onWheel={e => e.target.blur()} step="0.5" className="border rounded px-2 py-1" placeholder="出発地UTC±" value={row.departTZ} onChange={e => update(row.id, "departTZ", e.target.value)} />
+                        </div>
+                        <div className="col-span-2 grid grid-cols-3 gap-1 items-center">
+                          <input type="date" className="border rounded px-2 py-1" value={row.arriveDate} onChange={e => update(row.id, "arriveDate", e.target.value)} />
+                          <input type="time" className="border rounded px-2 py-1" value={row.arriveTime} onChange={e => update(row.id, "arriveTime", e.target.value)} />
+                          <input type="number" onWheel={e => e.target.blur()} step="0.5" className="border rounded px-2 py-1" placeholder="到着地UTC±" value={row.arriveTZ} onChange={e => update(row.id, "arriveTZ", e.target.value)} />
+                        </div>
+                        <select className="border rounded px-2 py-1" value={row.status} onChange={e => update(row.id, "status", e.target.value)}>
+                          <option>候補</option>
+                          <option>予約済み（キャンセル無料）</option>
+                          <option>予約済み（変更可能）</option>
+                          <option>予約済み（変更キャンセル不可）</option>
+                        </select>
+                        <input className="border rounded px-2 py-1" placeholder="運行会社／路線" value={row.airline || ""} onChange={e => update(row.id, "airline", e.target.value)} />
+                        <input className="border rounded px-2 py-1" placeholder="経由地／乗換" value={row.transitStops || ""} onChange={e => update(row.id, "transitStops", e.target.value)} />
+                        <input className="border rounded px-2 py-1" placeholder="座席クラス／個室区分" value={row.cls || ""} onChange={e => update(row.id, "cls", e.target.value)} />
+                        <div className="flex items-center gap-2">
+                          <input type="number" onWheel={e => e.target.blur()} className="border rounded px-2 py-1 w-full" placeholder="金額(円)" value={row.price || 0} onChange={e => update(row.id, "price", e.target.value)} />
+                          {row.mode === "飛行機" && (
+                            <label className="flex items-center gap-1 text-xs whitespace-nowrap">
+                              <input type="checkbox" checked={!!row.miles} onChange={e => update(row.id, "miles", e.target.checked)} />
+                              ANAマイル
+                            </label>
+                          )}
+                        </div>
+                        <textarea className="border rounded px-2 py-1 col-span-2" placeholder="メモ" value={row.memo} onChange={e => update(row.id, "memo", e.target.value)} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button onClick={() => remove(row.id)} className="text-gray-300 hover:text-red-400 shrink-0"><Trash2 size={16} /></button>
+              </div>
+            );
+          }
+
+          const code = CODES[row.city] || (row.city ? row.city.slice(0, 3).toUpperCase() : "---");
+          return (
+            <div key={row.id} className="flex items-center gap-2 rounded-lg transition-shadow" style={isDragOver ? { boxShadow: "0 0 0 2px #D9A441 inset" } : undefined} {...rowDragProps}>
+              {moveButtons}
+              <div className="flex-1">
+                <Stub left={
+                  <>
+                    <div className="text-[10px] tracking-widest opacity-70">CITY</div>
+                    <div className="text-lg font-bold tracking-wide">{code}</div>
+                  </>
+                }>
+                  <div className="flex items-start justify-between gap-2">
+                    <button onClick={() => setOpenId(isOpen ? null : row.id)} className="flex items-start gap-2 flex-1 text-left">
+                      {isOpen ? <ChevronDown size={16} className="mt-1 shrink-0" /> : <ChevronRight size={16} className="mt-1 shrink-0" />}
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold" style={{ color: "#1E2A38" }}>{row.city || "（都市未入力）"}</span>
+                          <span className="text-xs px-2 py-0.5 rounded-full text-white" style={{ background: row.status === "確定" ? "#3E7C7B" : "#D9A441" }}>{row.status}</span>
+                        </div>
+                        <div className="text-sm" style={{ color: "#6B6459" }}>{row.dates}　{row.nights !== "" && row.nights !== "-" ? `${row.nights}泊` : ""}</div>
+                      </div>
+                    </button>
+                  </div>
+                  {isOpen && (
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                      <input
+                        type="date"
+                        className="border rounded px-2 py-1 col-span-1"
+                        value={row.startDate || ""}
+                        onChange={e => {
+                          const iso = e.target.value;
+                          updateFields(row.id, { startDate: iso, dates: iso ? computeDatesLabel(iso, Math.max(1, Number(row.nights) || 1)) : row.dates });
+                        }}
+                      />
+                      <input className="border rounded px-2 py-1 col-span-1" placeholder="表示用日付 (例 6/7-11)" value={row.dates} onChange={e => update(row.id, "dates", e.target.value)} />
+                      <input className="border rounded px-2 py-1 col-span-1" placeholder="都市／国" value={row.city} onChange={e => update(row.id, "city", e.target.value)} />
+                      <input
+                        className="border rounded px-2 py-1 col-span-1" placeholder="泊数" value={row.nights}
+                        onChange={e => {
+                          const n = e.target.value;
+                          updateFields(row.id, { nights: n, dates: row.startDate ? computeDatesLabel(row.startDate, Math.max(1, Number(n) || 1)) : row.dates });
+                        }}
+                      />
+                      <select className="border rounded px-2 py-1 col-span-1" value={row.status} onChange={e => update(row.id, "status", e.target.value)}>
+                        <option>未確定</option>
+                        <option>確定</option>
+                      </select>
+                      <textarea className="border rounded px-2 py-1 col-span-2" placeholder="メモ" value={row.memo} onChange={e => update(row.id, "memo", e.target.value)} />
+                    </div>
+                  )}
+                </Stub>
+              </div>
+              <button onClick={() => remove(row.id)} className="text-gray-300 hover:text-red-400 shrink-0"><Trash2 size={16} /></button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-4 flex gap-2 flex-wrap">
+        <button onClick={addStay} className="flex items-center gap-1 text-sm px-3 py-2 rounded-lg text-white" style={{ background: "#3E7C7B" }}>
+          <Plus size={16} /> 滞在を追加
+        </button>
+        <button onClick={addTransit} className="flex items-center gap-1 text-sm px-3 py-2 rounded-lg text-white" style={{ background: "#1E2A38" }}>
+          <Plus size={16} /> 移動を追加
+        </button>
+        <button onClick={sortByDate} className="flex items-center gap-1 text-sm px-3 py-2 rounded-lg text-white" style={{ background: "#D9A441" }}>
+          <ArrowDown size={16} /> 日付順に並べ替え
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MapPage({ data }) {
+  const stays = data.filter(d => d.type !== "transit" && d.city);
+  const cityNames = stays.map(s => s.city.replace(/（.*/, ""));
+  const routeUrl = cityNames.length >= 2
+    ? `https://www.google.com/maps/dir/${cityNames.map(c => encodeURIComponent(c)).join("/")}`
+    : null;
+
+  return (
+    <div>
+      <SectionHeader icon={MapPin} title="地図" subtitle="実際のGoogleマップで各都市と全体ルートを確認できます" />
+
+      {routeUrl && (
+        <a
+          href={routeUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center justify-center gap-2 mb-4 px-4 py-3 rounded-lg text-white text-sm font-semibold"
+          style={{ background: "#1E2A38" }}
+        >
+          <MapPin size={16} /> ルート全体をGoogleマップで開く（{cityNames.length}都市）
+        </a>
+      )}
+
+      <div className="space-y-3">
+        {stays.map(stay => (
+          <div key={stay.id} className="rounded-lg border overflow-hidden" style={{ borderColor: "#D9CEB8" }}>
+            <div className="flex items-center justify-between px-3 py-2" style={{ background: "#FFFDF8" }}>
+              <div>
+                <span className="font-semibold text-sm" style={{ color: "#1E2A38" }}>{stay.city}</span>
+                <span className="text-xs ml-2" style={{ color: "#9C9384" }}>{stay.dates}</span>
+              </div>
+              <a
+                href={`https://www.google.com/maps?q=${encodeURIComponent(stay.city.replace(/（.*/, ""))}`}
+                target="_blank" rel="noopener noreferrer"
+                className="text-xs px-2 py-1 rounded text-white shrink-0"
+                style={{ background: "#3E7C7B" }}
+              >
+                大きい地図で開く
+              </a>
+            </div>
+            <iframe
+              title={`map-${stay.id}`}
+              width="100%"
+              height="220"
+              style={{ border: 0, display: "block" }}
+              loading="lazy"
+              src={`https://www.google.com/maps?q=${encodeURIComponent(stay.city.replace(/（.*/, ""))}&output=embed`}
+            />
+          </div>
+        ))}
+      </div>
+      <p className="text-xs mt-3" style={{ color: "#B8AF9C" }}>各地図はGoogleマップの埋め込み機能をそのまま表示しています。ホテルの正確な住所が決まったら、都市名の代わりにその住所で検索し直すとより正確なピンになります。</p>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div>
+      <div className="text-[9px] mb-0" style={{ color: "#9C9384" }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+// Googleマップの住所オートコンプリート付き入力欄。
+// window.google.maps.places が読み込まれていればサジェストが効き、無ければ普通のテキスト入力として動く。
+function AddressAutocomplete({ value, onChange, placeholder, className }) {
+  const inputRef = useRef(null);
+  const acRef = useRef(null);
+
+  useEffect(() => {
+    if (!inputRef.current) return;
+    if (!(window.google && window.google.maps && window.google.maps.places)) return;
+    if (acRef.current) return; // 二重初期化防止
+    acRef.current = new window.google.maps.places.Autocomplete(inputRef.current, {
+      fields: ["formatted_address", "name"],
+    });
+    acRef.current.addListener("place_changed", () => {
+      const place = acRef.current.getPlace();
+      const text = place.formatted_address || place.name || inputRef.current.value;
+      onChange(text);
+    });
+  }, []);
+
+  return (
+    <input
+      ref={inputRef}
+      className={className}
+      placeholder={placeholder}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+    />
+  );
+}
+
+function MonthCalendarPage({ itinerary, localTransport }) {
+  const stays = itinerary.filter(d => d.type !== "transit" && d.city && d.startDate);
+  const transits = itinerary.filter(d => d.type === "transit");
+
+  const months = useMemo(() => {
+    const start = new Date(CAL_START + "T00:00:00Z");
+    const end = new Date(CAL_END_EXCLUSIVE + "T00:00:00Z");
+    const list = [];
+    let cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+    const endMonth = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1));
+    while (cur <= endMonth) {
+      list.push({ year: cur.getUTCFullYear(), month: cur.getUTCMonth() });
+      cur = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 1));
+    }
+    return list;
+  }, []);
+
+  const stayOnDay = (iso) => stays.find(s => iso >= s.startDate && iso < addDaysISO(s.startDate, Math.max(1, Number(s.nights) || 1)));
+  const transitsOnDay = (iso) => transits.filter(t => t.departDate === iso || t.arriveDate === iso);
+
+  return (
+    <div>
+      <SectionHeader icon={CalendarDays} title="月表示" subtitle="日付ごとにどの都市にいるか・移動・要予約の手配を一覧できます（Googleカレンダー風の月表示）" />
+      {months.map(({ year, month }) => {
+        const firstOfMonth = new Date(Date.UTC(year, month, 1));
+        const startWeekday = firstOfMonth.getUTCDay();
+        const numDays = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+        const cells = [];
+        for (let i = 0; i < startWeekday; i++) cells.push(null);
+        for (let d = 1; d <= numDays; d++) {
+          cells.push(`${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+        }
+        while (cells.length % 7 !== 0) cells.push(null);
+
+        return (
+          <div key={`${year}-${month}`} className="mb-6">
+            <div className="text-sm font-semibold mb-2" style={{ color: "#1E2A38" }}>{year}年{month + 1}月</div>
+            <div className="grid grid-cols-7 gap-1 text-[10px] mb-1" style={{ color: "#9C9384" }}>
+              {["日", "月", "火", "水", "木", "金", "土"].map(w => <div key={w} className="text-center">{w}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {cells.map((iso, i) => {
+                if (!iso) return <div key={i} />;
+                const inRange = iso >= CAL_START && iso < CAL_END_EXCLUSIVE;
+                const stay = inRange ? stayOnDay(iso) : null;
+                const dayTransits = inRange ? transitsOnDay(iso) : [];
+                const localCount = stay ? localTransport.filter(l => l.linkedStayId === stay.id).length : 0;
+                const bookingCount = stay ? localTransport.filter(l => l.linkedStayId === stay.id && l.needsBooking).length : 0;
+                return (
+                  <div
+                    key={iso}
+                    className="rounded border p-1 min-h-[64px] text-[10px] flex flex-col"
+                    style={{
+                      borderColor: "#D9CEB8",
+                      background: !inRange ? "#F5F1E8" : stay ? (stay.status === "確定" ? "#FBF0D9" : "#EFF6F5") : "#FFFDF8",
+                      opacity: inRange ? 1 : 0.4,
+                    }}
+                  >
+                    <div className="flex justify-between">
+                      <span style={{ color: "#9C9384" }}>{Number(iso.slice(8, 10))}</span>
+                    </div>
+                    {stay && (
+                      <div className="mt-0.5 font-semibold truncate" style={{ color: stay.status === "確定" ? "#B8860B" : "#1E2A38" }}>{stay.city.replace(/（.*/, "")}</div>
+                    )}
+                    {dayTransits.map(t => {
+                      const Icon = MODE_ICON[t.mode] || ArrowRightLeft;
+                      return (
+                        <div key={t.id} className="flex items-center gap-0.5 mt-0.5" style={{ color: "#3E7C7B" }}>
+                          <Icon size={9} />
+                          <span className="truncate">{t.departDate === iso ? `→${t.toCity}` : `${t.fromCity}→`}</span>
+                        </div>
+                      );
+                    })}
+                    {localCount > 0 && (
+                      <div className="mt-0.5 flex items-center gap-1">
+                        <span className="px-1 rounded-full text-white" style={{ background: "#7C6FA0" }}>{localCount}件</span>
+                        {bookingCount > 0 && <span className="px-1 rounded-full text-white" style={{ background: "#C1584C" }}>予約{bookingCount}</span>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex gap-4 text-xs mt-2" style={{ color: "#6B6459" }}>
+        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded" style={{ background: "#FBF0D9", border: "1px solid #D9A441" }} />固定日程</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded" style={{ background: "#EFF6F5", border: "1px solid #3E7C7B" }} />未確定の滞在</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#C1584C" }} />要予約あり</span>
+      </div>
+    </div>
+  );
+}
+
+function WeekCalendarPage({ itinerary, hotels, localTransport }) {
+  const stays = itinerary.filter(d => d.type !== "transit" && d.city && d.startDate);
+  const transits = itinerary.filter(d => d.type === "transit");
+  const stayColorIdx = useMemo(() => {
+    const m = {};
+    stays.forEach((s, i) => { m[s.id] = i % 2; });
+    return m;
+  }, [stays]);
+  const STAY_COLORS = ["#3E7C7B", "#B98A2F"];
+  const rowH = 26;
+  const hours = Array.from({ length: 24 }, (_, i) => i);
+  const WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"];
+  const scrollerRef = useRef(null);
+  const weekRefs = useRef([]);
+  const [weekIdx, setWeekIdx] = useState(0);
+
+  const diffDaysISO = (a, b) => Math.round((new Date(b + "T00:00:00Z") - new Date(a + "T00:00:00Z")) / 86400000);
+
+  // 各滞在の「次への移動」の種類を判定（夜行なら出発日を1日分まるごと出発地側に含める、日中移動なら半日ずつに分ける）
+  const outgoingKind = useMemo(() => {
+    const m = {};
+    for (let i = 0; i < stays.length - 1; i++) {
+      const a = stays[i], b = stays[i + 1];
+      const idxA = itinerary.findIndex(x => x.id === a.id);
+      const idxB = itinerary.findIndex(x => x.id === b.id);
+      let t = null;
+      for (let j = idxA + 1; j < idxB; j++) { if (itinerary[j].type === "transit") { t = itinerary[j]; break; } }
+      const isNight = t && t.mode && t.mode.includes("夜行");
+      m[a.id] = isNight ? "night" : "day";
+    }
+    return m;
+  }, [stays, itinerary]);
+
+  const weekStarts = useMemo(() => {
+    const start = new Date(CAL_START + "T00:00:00Z");
+    const dow = start.getUTCDay(); // 0=日 ... 6=土
+    const diffToMonday = (dow + 6) % 7;
+    const monday0 = addDaysISO(CAL_START, -diffToMonday);
+    const arr = [];
+    for (let w = 0; w < 8; w++) arr.push(addDaysISO(monday0, w * 7));
+    return arr;
+  }, []);
+
+  const goToWeek = (idx) => {
+    const clamped = Math.max(0, Math.min(weekStarts.length - 1, idx));
+    setWeekIdx(clamped);
+    const el = weekRefs.current[clamped];
+    if (el && scrollerRef.current) {
+      scrollerRef.current.scrollTo({ left: el.offsetLeft, behavior: "smooth" });
+    }
+  };
+
+  const timeToTop = (time) => {
+    if (!time) return 0;
+    const [h, m] = time.split(":").map(Number);
+    return (h + (m || 0) / 60) * rowH;
+  };
+
+  // 移動を「発〜着」の実際の所要時間ぶんのブロックに変換（日をまたぐ場合は発日・着日それぞれに分割）
+  const transitSegments = useMemo(() => {
+    const segs = [];
+    transits.forEach(t => {
+      const hasDepart = t.departDate && t.departTime;
+      const hasArrive = t.arriveDate && t.arriveTime;
+      if (hasDepart && hasArrive && t.departDate === t.arriveDate) {
+        const top = timeToTop(t.departTime);
+        const bottom = timeToTop(t.arriveTime);
+        segs.push({ id: t.id + "-s", date: t.departDate, top, height: Math.max(16, bottom - top), t, label: `${t.departTime}-${t.arriveTime} ${t.toCity}行` });
+      } else {
+        if (hasDepart) {
+          const top = timeToTop(t.departTime);
+          const bottom = hasArrive ? 24 * rowH : top + 20;
+          segs.push({ id: t.id + "-d", date: t.departDate, top, height: Math.max(16, bottom - top), t, label: `${t.departTime} 発 ${t.toCity}行` });
+        }
+        if (hasArrive) {
+          const bottom = timeToTop(t.arriveTime);
+          const top = hasDepart && t.departDate !== t.arriveDate ? 0 : Math.max(0, bottom - 20);
+          segs.push({ id: t.id + "-a", date: t.arriveDate, top, height: Math.max(16, bottom - top), t, label: `${t.arriveTime} 着 ${t.fromCity}発` });
+        }
+      }
+    });
+    return segs;
+  }, [transits, rowH]);
+
+  // 現地手配（日付・時刻が入っているもの）を週表示に反映
+  const localSegments = useMemo(() => {
+    const segs = [];
+    (localTransport || []).forEach(item => {
+      if (!item.startTime) return;
+      const stay = stays.find(s => s.id === item.linkedStayId);
+      const date = item.date || (stay ? stay.startDate : null);
+      if (!date) return;
+      const top = timeToTop(item.startTime);
+      const bottom = item.endTime ? timeToTop(item.endTime) : top + 30;
+      const contentLabel = item.category === "移動"
+        ? (item.desc || [item.fromAddress, item.toAddress].filter(Boolean).join(" → ") || item.mode || "移動")
+        : (item.desc || item.category || "");
+      segs.push({
+        id: "local-" + item.id, date, top, height: Math.max(16, bottom - top),
+        label: `${item.startTime}${item.endTime ? "-" + item.endTime : ""} ${contentLabel}`,
+        color: item.category === "移動" ? "#3E7C7B" : item.category === "ツアー" ? "#D9A441" : item.category === "入場券" ? "#C1584C" : "#7C6FA0",
+      });
+    });
+    return segs;
+  }, [localTransport, stays, rowH]);
+
+  // ホテルのチェックイン/チェックアウト時刻から、部屋に入れない/出ないといけない時間帯をグレー表示する
+  const availabilityBands = useMemo(() => {
+    const bands = [];
+    (hotels || []).forEach(h => {
+      const stay = stays.find(s => s.id === h.linkedStayId);
+      if (!stay) return;
+      const nights = Math.max(1, Number(stay.nights) || 1);
+      const checkoutDate = addDaysISO(stay.startDate, nights);
+      if (h.checkinTime) {
+        const top = timeToTop(h.checkinTime);
+        const bottom = 24 * rowH;
+        if (bottom > top) bands.push({ id: h.id + "-in", date: stay.startDate, top, height: bottom - top, label: `チェックイン ${h.checkinTime}〜` });
+      }
+      if (h.checkoutTime) {
+        const top = 0;
+        const bottom = timeToTop(h.checkoutTime);
+        if (bottom > 0) bands.push({ id: h.id + "-out", date: checkoutDate, top, height: bottom, label: `〜チェックアウト ${h.checkoutTime}` });
+      }
+    });
+    return bands;
+  }, [hotels, stays, rowH]);
+
+  return (
+    <div>
+      <SectionHeader icon={CalendarDays} title="週表示" subtitle="Googleカレンダーの週表示のように、横にスワイプ/スクロールして週を切り替えられます" />
+      <div className="flex items-center justify-between mb-2">
+        <button onClick={() => goToWeek(weekIdx - 1)} disabled={weekIdx === 0} className="px-3 py-1.5 rounded-lg text-white text-sm disabled:opacity-30" style={{ background: "#1E2A38" }}>← 前の週</button>
+        <span className="text-xs" style={{ color: "#6B6459" }}>{weekIdx + 1} / {weekStarts.length}週</span>
+        <button onClick={() => goToWeek(weekIdx + 1)} disabled={weekIdx === weekStarts.length - 1} className="px-3 py-1.5 rounded-lg text-white text-sm disabled:opacity-30" style={{ background: "#1E2A38" }}>次の週 →</button>
+      </div>
+      <div
+        ref={scrollerRef}
+        className="flex overflow-x-auto"
+        style={{ scrollSnapType: "x mandatory" }}
+        onScroll={e => {
+          const el = e.target;
+          const idx = Math.round(el.scrollLeft / el.clientWidth);
+          if (idx !== weekIdx && idx >= 0 && idx < weekStarts.length) setWeekIdx(idx);
+        }}
+      >
+      {weekStarts.map((weekStart, wi) => {
+        const days = Array.from({ length: 7 }, (_, i) => addDaysISO(weekStart, i));
+
+        // 半日(0.5日)単位のインデックスで滞在バーを計算
+        // 日中移動＝区切りの日を半分に分ける／夜行移動＝出発日をまるごと出発地側に含める
+        const barsRaw = stays.map((s, si) => {
+          const nights = Math.max(1, Number(s.nights) || 1);
+          const checkout = addDaysISO(s.startDate, nights);
+          const prevStay = si > 0 ? stays[si - 1] : null;
+          const nextStay = si < stays.length - 1 ? stays[si + 1] : null;
+          const inKind = prevStay ? outgoingKind[prevStay.id] : null; // このstayへの入り方
+          const outKind = outgoingKind[s.id]; // このstayからの出方
+
+          let startHalf = diffDaysISO(weekStart, s.startDate) * 2 + (inKind === "day" ? 1 : 0);
+          let endHalf;
+          if (outKind === "night" && nextStay) {
+            // 夜行移動なら、次の滞在の実際の開始日にぴったり合わせる（間が空いていても埋め、重なりは作らない）
+            endHalf = diffDaysISO(weekStart, nextStay.startDate) * 2;
+          } else if (outKind === "day") {
+            endHalf = diffDaysISO(weekStart, checkout) * 2 + 1;
+          } else {
+            endHalf = diffDaysISO(weekStart, checkout) * 2;
+          }
+          startHalf = Math.max(0, startHalf);
+          endHalf = Math.min(14, endHalf);
+          if (endHalf <= 0 || startHalf >= 14 || endHalf <= startHalf) return null;
+          return { ...s, startHalf, span: endHalf - startHalf };
+        }).filter(Boolean).sort((a, b) => a.startHalf - b.startHalf);
+
+        const laneEnds = [];
+        const bars = barsRaw.map(b => {
+          let lane = laneEnds.findIndex(end => end <= b.startHalf);
+          if (lane === -1) { lane = laneEnds.length; laneEnds.push(b.startHalf + b.span); }
+          else laneEnds[lane] = b.startHalf + b.span;
+          return { ...b, lane };
+        });
+        const barLanes = Math.max(1, ...bars.map(b => b.lane + 1));
+
+        return (
+          <div
+            key={weekStart}
+            ref={el => weekRefs.current[wi] = el}
+            className="shrink-0 w-full rounded-lg border overflow-hidden mr-3"
+            style={{ borderColor: "#D9CEB8", scrollSnapAlign: "start" }}
+          >
+            {/* 曜日ヘッダー */}
+            <div className="flex" style={{ background: "#1E2A38" }}>
+              <div className="shrink-0" style={{ width: 40 }} />
+              <div className="grid grid-cols-7 flex-1">
+                {days.map((iso, i) => (
+                  <div key={iso} className="text-center py-1.5 border-r" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
+                    <div className="text-[10px]" style={{ color: isoWeekday(iso) === 0 ? "#F5B8C4" : isoWeekday(iso) === 6 ? "#9FD3E8" : "rgba(255,255,255,0.6)" }}>{WEEKDAY_JP[i]}</div>
+                    <div className="text-lg text-white">{Number(iso.slice(8, 10))}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* 終日イベント（滞在）バー */}
+            <div className="flex border-b" style={{ borderColor: "#D9CEB8", minHeight: barLanes * 22 + 6 }}>
+              <div className="shrink-0" style={{ width: 40 }} />
+              <div className="relative grid grid-cols-7 flex-1">
+                {days.map(iso => <div key={iso} className="border-r" style={{ borderColor: "#EEE6D3" }} />)}
+                {bars.map(b => (
+                  <div
+                    key={b.id}
+                    className="absolute rounded px-1.5 text-[10px] text-white truncate flex items-center"
+                    style={{
+                      left: `${(b.startHalf / 14) * 100}%`, width: `${(b.span / 14) * 100}%`,
+                      top: b.lane * 22 + 3, height: 19,
+                      background: STAY_COLORS[stayColorIdx[b.id] ?? 0],
+                    }}
+                    title={b.city}
+                  >
+                    {b.city.replace(/（.*/, "")}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* 時間軸グリッド */}
+            <div className="flex" style={{ height: 24 * rowH }}>
+              <div className="relative shrink-0" style={{ width: 40, height: 24 * rowH }}>
+                {hours.map(h => (
+                  h === 0 ? null : (
+                    <div key={h} className="absolute right-1 text-[9px] whitespace-nowrap" style={{ top: h * rowH - 5, color: "#9C9384" }}>
+                      {h}:00
+                    </div>
+                  )
+                ))}
+              </div>
+              <div className="relative grid grid-cols-7 flex-1">
+                {days.map(iso => {
+                  const daySegs = transitSegments.filter(seg => seg.date === iso);
+                  const dayLocalSegs = localSegments.filter(seg => seg.date === iso);
+                  const dayBands = availabilityBands.filter(b => b.date === iso);
+                  return (
+                    <div key={iso} className="relative border-r" style={{ borderColor: "#EEE6D3" }}>
+                      {hours.map(h => (
+                        <div key={h} className="border-b" style={{ height: rowH, borderColor: "#F2ECDC" }} />
+                      ))}
+                      {dayBands.map(b => (
+                        <div
+                          key={b.id}
+                          className="absolute left-0 right-0"
+                          style={{ top: b.top, height: b.height, background: "rgba(120,120,120,0.25)" }}
+                          title={b.label}
+                        />
+                      ))}
+                      {daySegs.map(seg => {
+                        const Icon = MODE_ICON[seg.t.mode] || ArrowRightLeft;
+                        return (
+                          <div
+                            key={seg.id}
+                            className="absolute left-0 right-0 mx-0.5 rounded px-1 text-[9px] text-white flex items-start gap-0.5 overflow-hidden"
+                            style={{ top: seg.top, height: seg.height, background: "#7C6FA0" }}
+                            title={`${seg.t.fromCity} → ${seg.t.toCity}（${seg.t.mode}）`}
+                          >
+                            <Icon size={9} className="shrink-0 mt-0.5" />
+                            <span className="truncate">{seg.label}</span>
+                          </div>
+                        );
+                      })}
+                      {dayLocalSegs.map(seg => (
+                        <div
+                          key={seg.id}
+                          className="absolute left-0 right-0 mx-0.5 rounded px-1 text-[9px] text-white overflow-hidden"
+                          style={{ top: seg.top, height: seg.height, background: seg.color }}
+                          title={seg.label}
+                        >
+                          {seg.label}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      </div>
+    </div>
+  );
+}
+
+function HotelsPage({ data, setData, itinerary }) {
+  const stays = itinerary.filter(d => d.type !== "transit" && d.city);
+  const stayIndex = (id) => itinerary.findIndex(d => d.id === id);
+  const sortedData = [...data].sort((a, b) => {
+    const ia = a.linkedStayId != null ? stayIndex(a.linkedStayId) : 9999;
+    const ib = b.linkedStayId != null ? stayIndex(b.linkedStayId) : 9999;
+    return (ia === -1 ? 9999 : ia) - (ib === -1 ? 9999 : ib);
+  });
+  const update = (id, field, value) => setData(data.map(d => d.id === id ? { ...d, [field]: value } : d));
+  const updateFields = (id, patch) => setData(data.map(d => d.id === id ? { ...d, ...patch } : d));
+  const remove = (id) => setData(data.filter(d => d.id !== id));
+  const addRow = () => setData([...data, { id: uid(), linkedStayId: null, city: "", name: "", checkin: "", checkout: "", nights: "", guests: 1, perNight: 0, total: 0, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "候補", paymentStatus: "未払い" }]);
+  const total = data.reduce((s, d) => s + (Number(d.total) || 0), 0);
+  const paidTotal = data.filter(d => d.paymentStatus === "支払い済み").reduce((s, d) => s + (Number(d.total) || 0), 0);
+  const unpaidTotal = total - paidTotal;
+  const unbooked = data.filter(d => d.status === "候補");
+  const unbookedCities = new Set(unbooked.map(d => d.city).filter(Boolean));
+  const unbookedNights = unbooked.reduce((s, d) => {
+    const stay = stays.find(st => st.id === d.linkedStayId);
+    const n = stay ? Number(stay.nights) : Number(d.nights);
+    return s + (Number(n) || 0);
+  }, 0);
+  const totalNights = data.reduce((s, d) => {
+    const stay = stays.find(st => st.id === d.linkedStayId);
+    const n = stay ? Number(stay.nights) : Number(d.nights);
+    return s + (Number(n) || 0);
+  }, 0);
+  const myShareTotal = data.reduce((s, d) => {
+    const g = Math.max(1, Number(d.guests) || 1);
+    return s + (Number(d.total) || 0) / g;
+  }, 0);
+  const overBudgetCount = data.filter(d => {
+    const stay = stays.find(st => st.id === d.linkedStayId);
+    const n = stay ? Number(stay.nights) : Number(d.nights);
+    const g = Math.max(1, Number(d.guests) || 1);
+    return n > 0 && Number(d.total) > 0 && ((Number(d.total) / g) / n) > 10000;
+  }).length;
+
+  return (
+    <div>
+      <SectionHeader icon={Hotel} title="ホテル管理" subtitle="日程表の滞在ごとに自動でカードが生成されます（姉宅は対象外）。泊数・日付は日程表と自動連動します" />
+      <div className="mb-4 p-4 rounded-lg" style={{ background: "#1E2A38", color: "#FAF6EF" }}>
+        <div className="text-xs opacity-70">宿泊費 合計（総額）</div>
+        <div className="text-2xl font-bold">¥{total.toLocaleString()}</div>
+        <div className="flex gap-4 text-xs mt-1 opacity-80">
+          <span>支払い済み ¥{paidTotal.toLocaleString()}</span>
+          <span>未払い ¥{unpaidTotal.toLocaleString()}</span>
+        </div>
+        <div className="text-xs mt-2 pt-2" style={{ borderTop: "1px solid rgba(255,255,255,0.15)" }}>
+          自己負担額（人数で割った分） <span className="font-semibold">¥{Math.round(myShareTotal).toLocaleString()}</span>
+        </div>
+        <div className="text-xs mt-1" style={{ color: "#D9A441" }}>
+          未予約：{totalNights}泊中{unbookedNights}泊（{unbookedCities.size}都市）
+        </div>
+        {overBudgetCount > 0 && (
+          <div className="text-xs mt-1" style={{ color: "#F5B8B0" }}>
+            1泊1万円超え：{overBudgetCount}件（自己負担ベース）
+          </div>
+        )}
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {sortedData.map(h => {
+          const linked = stays.find(s => s.id === h.linkedStayId) || null;
+          const nights = linked ? Math.max(1, Number(linked.nights) || 1) : h.nights;
+          const checkin = linked ? fmtMD(linked.startDate) : h.checkin;
+          const checkout = linked && linked.startDate ? fmtMD(addDaysISO(linked.startDate, Math.max(1, Number(linked.nights) || 1))) : h.checkout;
+          const g = Math.max(1, Number(h.guests) || 1);
+          const n = Number(nights) || 0;
+          const myShare = (Number(h.total) || 0) / g;
+          const myShareOverBudget = n > 0 && Number(h.total) > 0 && (myShare / n) > 10000;
+          return (
+            <div key={h.id} className="rounded-lg border p-2.5 relative" style={{ borderColor: myShareOverBudget ? "#C1584C" : "#D9CEB8", background: myShareOverBudget ? "#FBEDEA" : "#FFFDF8", borderWidth: myShareOverBudget ? 2 : 1 }}>
+              <button onClick={() => remove(h.id)} className="absolute top-3 right-3 text-gray-300 hover:text-red-400"><Trash2 size={16} /></button>
+              <div className="flex items-center gap-2 pr-6">
+                {linked && <span className="font-semibold text-sm" style={{ color: "#1E2A38" }}>{linked.city}</span>}
+                <span className="text-xs px-2 py-0.5 rounded-full text-white" style={{ background: h.status && h.status.startsWith("予約済み") ? "#3E7C7B" : "#D9A441" }}>{h.status}</span>
+                {myShareOverBudget && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full text-white" style={{ background: "#C1584C" }}>1泊1万円超え</span>
+                )}
+              </div>
+              <div className="mt-2 space-y-1.5 text-xs">
+                <Field label="日程表と紐づけ">
+                  <select
+                    className="border rounded px-1.5 py-0.5 w-full text-xs"
+                    value={h.linkedStayId || ""}
+                    onChange={e => {
+                      const sid = e.target.value ? Number(e.target.value) : null;
+                      const stay = stays.find(s => s.id === sid);
+                      updateFields(h.id, { linkedStayId: sid, city: stay ? stay.city : h.city });
+                    }}
+                  >
+                    <option value="">日程表と連動しない（手入力）</option>
+                    {stays.map(s => <option key={s.id} value={s.id}>{s.city}（{s.dates}）</option>)}
+                  </select>
+                </Field>
+                {!linked && (
+                  <Field label="都市">
+                    <input className="border rounded px-1.5 py-0.5 w-full font-semibold" placeholder="例：プラハ" value={h.city} onChange={e => update(h.id, "city", e.target.value)} />
+                  </Field>
+                )}
+                <Field label="宿泊先名">
+                  <input className="border rounded px-1.5 py-0.5 w-full" placeholder="例：旧市街Airbnb" value={h.name} onChange={e => update(h.id, "name", e.target.value)} />
+                </Field>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="予約サイト">
+                    <input className="border rounded px-1.5 py-0.5 w-full" placeholder="例：Airbnb" value={h.site} onChange={e => update(h.id, "site", e.target.value)} />
+                  </Field>
+                  <Field label="予約番号">
+                    <input className="border rounded px-1.5 py-0.5 w-full" placeholder="" value={h.confirmation} onChange={e => update(h.id, "confirmation", e.target.value)} />
+                  </Field>
+                </div>
+                <Field label="予約ページURL">
+                  <div className="flex gap-1">
+                    <input className="border rounded px-1.5 py-0.5 w-full" placeholder="https://..." value={h.url || ""} onChange={e => update(h.id, "url", e.target.value)} />
+                    {h.url && (
+                      <a href={h.url} target="_blank" rel="noopener noreferrer" className="shrink-0 rounded px-2 py-1 text-white flex items-center" style={{ background: "#3E7C7B" }} title="予約ページを開く">
+                        <ChevronRight size={13} />
+                      </a>
+                    )}
+                  </div>
+                </Field>
+                <div className="grid grid-cols-3 gap-2">
+                  <Field label="チェックイン">
+                    {linked
+                      ? <input className="border rounded px-1.5 py-0.5 w-full bg-gray-50" value={checkin} disabled title="日程表と連動中" />
+                      : <input className="border rounded px-1.5 py-0.5 w-full" placeholder="6/15" value={h.checkin} onChange={e => update(h.id, "checkin", e.target.value)} />}
+                  </Field>
+                  <Field label="チェックアウト">
+                    {linked
+                      ? <input className="border rounded px-1.5 py-0.5 w-full bg-gray-50" value={checkout} disabled title="日程表と連動中" />
+                      : <input className="border rounded px-1.5 py-0.5 w-full" placeholder="6/19" value={h.checkout} onChange={e => update(h.id, "checkout", e.target.value)} />}
+                  </Field>
+                  <Field label="泊数">
+                    {linked
+                      ? <input className="border rounded px-1.5 py-0.5 w-full bg-gray-50" value={nights} disabled title="日程表と連動中" />
+                      : <input className="border rounded px-1.5 py-0.5 w-full" placeholder="4" value={h.nights} onChange={e => update(h.id, "nights", e.target.value)} />}
+                  </Field>
+                </div>
+                {linked && <div className="text-[10px]" style={{ color: "#3E7C7B" }}>日程表と連動中（変更は日程表ページで行ってください）</div>}
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="チェックイン時刻">
+                    <select className="border rounded px-1.5 py-0.5 w-full" value={h.checkinTime || ""} onChange={e => update(h.id, "checkinTime", e.target.value)}>
+                      <option value="">未設定</option>
+                      {TIME_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="チェックアウト時刻">
+                    <select className="border rounded px-1.5 py-0.5 w-full" value={h.checkoutTime || ""} onChange={e => update(h.id, "checkoutTime", e.target.value)}>
+                      <option value="">未設定</option>
+                      {TIME_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </Field>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Field label="人数">
+                    <input
+                      type="number" onWheel={e => e.target.blur()} min="1" className="border rounded px-1.5 py-0.5 w-full" placeholder="1" value={h.guests || 1}
+                      onChange={e => {
+                        const guests = Math.max(1, Number(e.target.value) || 1);
+                        update(h.id, "guests", guests);
+                      }}
+                    />
+                  </Field>
+                  <Field label="1泊1人(円・自動)">
+                    <input
+                      type="text" readOnly disabled className="border rounded px-1.5 py-0.5 w-full bg-gray-50"
+                      value={(() => {
+                        const n = Number(nights) || 0;
+                        const g = Math.max(1, Number(h.guests) || 1);
+                        if (n > 0 && g > 0 && h.total !== "" && h.total != null) return Math.round(Number(h.total) / (n * g)).toLocaleString();
+                        return "-";
+                      })()}
+                    />
+                  </Field>
+                  <Field label="合計(円)">
+                    <input
+                      type="number" onWheel={e => e.target.blur()} className="border rounded px-1.5 py-0.5 w-full" placeholder="0" value={h.total}
+                      onChange={e => update(h.id, "total", e.target.value)}
+                    />
+                  </Field>
+                </div>
+                {(Number(h.guests) || 1) > 1 && (
+                  <div className="text-[10px]" style={{ color: "#3E7C7B" }}>自己負担額（{h.guests}人で割った分）：¥{Math.round((Number(h.total) || 0) / Math.max(1, Number(h.guests) || 1)).toLocaleString()}</div>
+                )}
+                {!(Number(nights) > 0) && <div className="text-[10px]" style={{ color: "#B8AF9C" }}>泊数が未設定のため自動計算できません（日程表で泊数を設定してください）</div>}
+                <div className="flex flex-wrap gap-1">
+                  {[
+                    ["privateRoom", "個室"],
+                    ["privateToilet", "専用トイレ"],
+                    ["privateBathtub", "専用バス"],
+                    ["evAvailable", "EV有"],
+                  ].map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => update(h.id, key, !h[key])}
+                      className="text-[10px] px-1.5 py-0.5 rounded-full border"
+                      style={{
+                        background: h[key] ? "#3E7C7B" : "transparent",
+                        color: h[key] ? "white" : "#9C9384",
+                        borderColor: h[key] ? "#3E7C7B" : "#D9CEB8",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="キャンセル無料期限">
+                    <input type="date" className="border rounded px-1.5 py-0.5 w-full" value={h.cancelDeadline || ""} onChange={e => update(h.id, "cancelDeadline", e.target.value)} />
+                  </Field>
+                  <Field label="住所">
+                    <div className="flex gap-1">
+                      <AddressAutocomplete className="border rounded px-1.5 py-0.5 w-full" placeholder="" value={h.address} onChange={v => update(h.id, "address", v)} />
+                      {h.address && (
+                        <a
+                          href={`https://www.google.com/maps?q=${encodeURIComponent(h.address)}`}
+                          target="_blank" rel="noopener noreferrer"
+                          className="shrink-0 rounded px-2 py-0.5 text-white flex items-center"
+                          style={{ background: "#3E7C7B" }}
+                          title="Googleマップで開く"
+                        >
+                          <MapPin size={13} />
+                        </a>
+                      )}
+                    </div>
+                  </Field>
+                </div>
+                <Field label="予約状況">
+                  <select className="border rounded px-1.5 py-0.5 w-full" value={h.status} onChange={e => update(h.id, "status", e.target.value)}>
+                    <option>候補</option>
+                    <option>予約済み（キャンセル無料）</option>
+                    <option>予約済み（変更可能）</option>
+                    <option>予約済み（変更キャンセル不可）</option>
+                  </select>
+                </Field>
+                <div className={(h.paymentStatus || "未払い") === "未払い" ? "grid grid-cols-2 gap-2" : ""}>
+                  <Field label="支払い状況">
+                    <select className="border rounded px-1.5 py-0.5 w-full" value={h.paymentStatus || "未払い"} onChange={e => update(h.id, "paymentStatus", e.target.value)}>
+                      <option>未払い</option>
+                      <option>支払い済み</option>
+                    </select>
+                  </Field>
+                  {(h.paymentStatus || "未払い") === "未払い" && (
+                    <Field label="支払い予定日">
+                      <input type="date" className="border rounded px-1.5 py-0.5 w-full" value={h.paymentDueDate || ""} onChange={e => update(h.id, "paymentDueDate", e.target.value)} />
+                    </Field>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={addRow} className="mt-4 flex items-center gap-1 text-sm px-3 py-2 rounded-lg text-white" style={{ background: "#3E7C7B" }}>
+        <Plus size={16} /> 宿泊先を追加
+      </button>
+    </div>
+  );
+}
+
+function BudgetPage({ data, setData, hotelTotal, flightTotal, localTransportTotal, localActivityTotal, totalBudget, setTotalBudget }) {
+  const update = (id, field, value) => setData(data.map(d => d.id === id ? { ...d, [field]: value } : d));
+  const remove = (id) => setData(data.filter(d => d.id !== id));
+  const addRow = () => setData([...data, { id: uid(), category: "", target: 0, auto: false, actual: 0 }]);
+
+  const rows = data.map(d => {
+    const actual = d.auto ? (d.category.startsWith("移動費") ? flightTotal : d.category === "宿泊" ? hotelTotal : d.category === "現地交通" ? localTransportTotal : d.category === "観光・体験" ? localActivityTotal : 0) : Number(d.actual) || 0;
+    return { ...d, actualComputed: actual };
+  });
+  const totalTarget = rows.reduce((s, r) => s + (Number(r.target) || 0), 0);
+  const totalActual = rows.reduce((s, r) => s + r.actualComputed, 0);
+  const pct = totalBudget ? Math.min(100, Math.round((totalActual / totalBudget) * 100)) : 0;
+
+  return (
+    <div>
+      <SectionHeader icon={Wallet} title="金額管理（一覧）" subtitle="カテゴリ別の予算と実費をまとめて確認します" />
+      <div className="p-4 rounded-lg mb-5" style={{ background: "#1E2A38", color: "#FAF6EF" }}>
+        <div className="flex justify-between items-center text-sm mb-1">
+          <span>総予算</span>
+          <input type="number" onWheel={e => e.target.blur()} className="text-right bg-transparent border-b border-white/40 w-32 text-white" value={totalBudget} onChange={e => setTotalBudget(Number(e.target.value))} />
+        </div>
+        <div className="flex justify-between items-baseline">
+          <span className="text-2xl font-bold">¥{totalActual.toLocaleString()}</span>
+          <span className="text-xs opacity-70">使用中 / ¥{totalBudget.toLocaleString()}</span>
+        </div>
+        <div className="w-full h-2 rounded-full mt-2" style={{ background: "rgba(255,255,255,0.2)" }}>
+          <div className="h-2 rounded-full" style={{ width: `${pct}%`, background: pct > 90 ? "#C1584C" : "#D9A441" }} />
+        </div>
+        <div className="text-xs opacity-70 mt-1">{pct}%</div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="text-left" style={{ color: "#6B6459" }}>
+              <th className="pb-2">カテゴリ</th>
+              <th className="pb-2">予算</th>
+              <th className="pb-2">実費</th>
+              <th className="pb-2">差額</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => {
+              const diff = (Number(r.target) || 0) - r.actualComputed;
+              return (
+                <tr key={r.id} className="border-t" style={{ borderColor: "#E5DDC8" }}>
+                  <td className="py-2 pr-2">
+                    <input className="border rounded px-2 py-1 w-full" value={r.category} onChange={e => update(r.id, "category", e.target.value)} />
+                    {r.auto && <div className="text-[10px] mt-1" style={{ color: "#3E7C7B" }}>自動集計（{r.category.startsWith("移動費") || r.category === "現地交通" || r.category === "観光・体験" ? "現地手配" : "ホテル管理"}ページと連動）</div>}
+                  </td>
+                  <td className="py-2 pr-2">
+                    <input type="number" onWheel={e => e.target.blur()} className="border rounded px-2 py-1 w-24" value={r.target} onChange={e => update(r.id, "target", e.target.value)} />
+                  </td>
+                  <td className="py-2 pr-2">
+                    {r.auto ? (
+                      <span className="px-2">¥{r.actualComputed.toLocaleString()}</span>
+                    ) : (
+                      <input type="number" onWheel={e => e.target.blur()} className="border rounded px-2 py-1 w-24" value={r.actual} onChange={e => update(r.id, "actual", e.target.value)} />
+                    )}
+                  </td>
+                  <td className="py-2 pr-2" style={{ color: diff < 0 ? "#C1584C" : "#3E7C7B" }}>¥{diff.toLocaleString()}</td>
+                  <td><button onClick={() => remove(r.id)} className="text-gray-300 hover:text-red-400"><Trash2 size={14} /></button></td>
+                </tr>
+              );
+            })}
+            <tr className="border-t font-semibold" style={{ borderColor: "#E5DDC8" }}>
+              <td className="py-2">合計</td>
+              <td className="py-2">¥{totalTarget.toLocaleString()}</td>
+              <td className="py-2">¥{totalActual.toLocaleString()}</td>
+              <td className="py-2" style={{ color: (totalTarget - totalActual) < 0 ? "#C1584C" : "#3E7C7B" }}>¥{(totalTarget - totalActual).toLocaleString()}</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <button onClick={addRow} className="mt-4 flex items-center gap-1 text-sm px-3 py-2 rounded-lg text-white" style={{ background: "#3E7C7B" }}>
+        <Plus size={16} /> カテゴリを追加
+      </button>
+    </div>
+  );
+}
+
+function LocalRow({ row, update, remove, CATS, CAT_COLOR }) {
+  return (
+    <div className="flex items-center gap-1.5 text-xs py-0.5 flex-wrap">
+      <select className="border rounded px-1 py-1 shrink-0 text-white text-[10px]" style={{ background: CAT_COLOR[row.category] || "#9C9384" }} value={row.category || "移動"} onChange={e => update(row.id, "category", e.target.value)}>
+        {CATS.map(c => <option key={c} value={c} style={{ color: "black", background: "white" }}>{c}</option>)}
+      </select>
+      {row.category !== "移動" && (
+        <input className="border rounded px-1.5 py-1 flex-1 min-w-0" placeholder="内容（例：コロッセオ入場券）" value={row.desc} onChange={e => update(row.id, "desc", e.target.value)} />
+      )}
+      {row.category === "移動" ? (
+        <>
+          <AddressAutocomplete className="border rounded px-1.5 py-1 w-20 shrink-0" placeholder="出発地" value={row.fromAddress || ""} onChange={v => update(row.id, "fromAddress", v)} />
+          {row.fromAddress && (
+            <a href={`https://www.google.com/maps?q=${encodeURIComponent(row.fromAddress)}`} target="_blank" rel="noopener noreferrer" className="shrink-0 rounded px-1.5 py-1 text-white flex items-center" style={{ background: "#3E7C7B" }} title="出発地をGoogleマップで開く">
+              <MapPin size={12} />
+            </a>
+          )}
+          <AddressAutocomplete className="border rounded px-1.5 py-1 w-20 shrink-0" placeholder="到着地" value={row.toAddress || ""} onChange={v => update(row.id, "toAddress", v)} />
+          {row.toAddress && (
+            <a href={`https://www.google.com/maps?q=${encodeURIComponent(row.toAddress)}`} target="_blank" rel="noopener noreferrer" className="shrink-0 rounded px-1.5 py-1 text-white flex items-center" style={{ background: "#3E7C7B" }} title="到着地をGoogleマップで開く">
+              <MapPin size={12} />
+            </a>
+          )}
+        </>
+      ) : (
+        <>
+          <AddressAutocomplete className="border rounded px-1.5 py-1 w-24 shrink-0" placeholder="住所" value={row.address || ""} onChange={v => update(row.id, "address", v)} />
+          {row.address && (
+            <a
+              href={`https://www.google.com/maps?q=${encodeURIComponent(row.address)}`}
+              target="_blank" rel="noopener noreferrer"
+              className="shrink-0 rounded px-1.5 py-1 text-white flex items-center"
+              style={{ background: "#3E7C7B" }}
+              title="Googleマップで開く"
+            >
+              <MapPin size={12} />
+            </a>
+          )}
+        </>
+      )}
+      <input type="date" className="border rounded px-1.5 py-1 w-[120px] shrink-0" value={row.date || ""} onChange={e => update(row.id, "date", e.target.value)} title="実施日" />
+      <input type="time" className="border rounded px-1.5 py-1 w-[85px] shrink-0" value={row.startTime || ""} onChange={e => update(row.id, "startTime", e.target.value)} title="開始時刻" />
+      <input type="time" className="border rounded px-1.5 py-1 w-[85px] shrink-0" value={row.endTime || ""} onChange={e => update(row.id, "endTime", e.target.value)} title="終了時刻" />
+      <input className="border rounded px-1.5 py-1 w-16 shrink-0" placeholder="手段" value={row.mode} onChange={e => update(row.id, "mode", e.target.value)} />
+      <input type="number" onWheel={e => e.target.blur()} className="border rounded px-1.5 py-1 w-16 shrink-0" placeholder="金額" value={row.price || 0} onChange={e => update(row.id, "price", e.target.value)} />
+      <select className="border rounded px-1 py-1 w-[72px] shrink-0" value={row.paymentStatus || "未払い"} onChange={e => update(row.id, "paymentStatus", e.target.value)}>
+        <option>未払い</option>
+        <option>支払い済み</option>
+      </select>
+      {(row.paymentStatus || "未払い") === "未払い" && (
+        <input type="date" className="border rounded px-1 py-1 w-[110px] shrink-0" value={row.paymentDueDate || ""} onChange={e => update(row.id, "paymentDueDate", e.target.value)} title="支払い予定日" />
+      )}
+      <label className="flex items-center gap-1 text-[10px] shrink-0" style={{ color: row.needsBooking ? "#C1584C" : "#9C9384" }}>
+        <input type="checkbox" checked={!!row.needsBooking} onChange={e => update(row.id, "needsBooking", e.target.checked)} />
+        事前予約要
+      </label>
+      <button onClick={() => remove(row.id)} className="text-gray-300 hover:text-red-400 shrink-0"><Trash2 size={13} /></button>
+    </div>
+  );
+}
+
+function LocalTransitRow({ row, expanded, setExpanded, updateTransit, removeTransit }) {
+  const Icon = MODE_ICON[row.mode] || ArrowRightLeft;
+  const isFlight = row.mode === "飛行機";
+  const isOpen = !!expanded[row.id];
+  return (
+    <div className="relative mb-2">
+      <div className="absolute -left-5 top-0.5 w-3 h-3 rounded-full" style={{ background: "#D9CEB8" }} />
+      <button onClick={() => setExpanded({ ...expanded, [row.id]: !isOpen })} className="flex items-center gap-2 text-xs w-full text-left" style={{ color: "#6B6459" }}>
+        {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <Icon size={12} />
+        <span>{row.fromCity} → {row.toCity}</span>
+        <span className="opacity-70">{fmtDate(row.departDate)}</span>
+        {Number(row.price) > 0 && <span className="opacity-70">¥{Number(row.price).toLocaleString()}</span>}
+        <span className="text-[10px] px-1.5 py-0.5 rounded-full text-white ml-auto shrink-0" style={{ background: row.status && row.status.startsWith("予約済み") ? "#3E7C7B" : "#D9A441" }}>{row.status}</span>
+      </button>
+      {isOpen && (
+        <div className="mt-1.5 ml-4 p-2 rounded-md border space-y-2 text-xs" style={{ borderColor: "#D9CEB8", background: "#FFFDF8" }}>
+          <div className="flex gap-2">
+            <select className="border rounded px-2 py-1" value={row.mode} onChange={e => updateTransit(row.id, "mode", e.target.value)}>
+              <option>未定</option><option>飛行機</option><option>鉄道</option><option>夜行列車</option><option>フェリー</option><option>夜行フェリー</option><option>バス</option>
+            </select>
+            <input className="border rounded px-2 py-1 w-full" placeholder="出発地" value={row.fromCity} onChange={e => updateTransit(row.id, "fromCity", e.target.value)} />
+            <input className="border rounded px-2 py-1 w-full" placeholder="到着地" value={row.toCity} onChange={e => updateTransit(row.id, "toCity", e.target.value)} />
+          </div>
+          <div className="text-[10px]" style={{ color: "#9C9384" }}>日時の詳細は日程表ページで編集できます（{fmtDate(row.departDate)} {row.departTime} → {fmtDate(row.arriveDate)} {row.arriveTime}）</div>
+          <select className="border rounded px-2 py-1 w-full" value={row.status} onChange={e => updateTransit(row.id, "status", e.target.value)}>
+            <option>候補</option>
+            <option>予約済み（キャンセル無料）</option>
+            <option>予約済み（変更可能）</option>
+            <option>予約済み（変更キャンセル不可）</option>
+          </select>
+          <div className="flex gap-2">
+            <input className="border rounded px-2 py-1 w-full" placeholder={isFlight ? "航空会社" : "運行会社・路線名"} value={row.airline || ""} onChange={e => updateTransit(row.id, "airline", e.target.value)} />
+            <input className="border rounded px-2 py-1 w-full" placeholder="経由地／乗換" value={row.transitStops || ""} onChange={e => updateTransit(row.id, "transitStops", e.target.value)} />
+            <input className="border rounded px-2 py-1 w-full" placeholder="座席クラス／個室区分" value={row.cls || ""} onChange={e => updateTransit(row.id, "cls", e.target.value)} />
+          </div>
+          <div className="flex gap-2 items-center">
+            <input type="number" onWheel={e => e.target.blur()} className="border rounded px-2 py-1 w-full" placeholder="金額(円)" value={row.price || 0} onChange={e => updateTransit(row.id, "price", e.target.value)} />
+            {isFlight && (
+              <label className="flex items-center gap-1 whitespace-nowrap">
+                <input type="checkbox" checked={!!row.miles} onChange={e => updateTransit(row.id, "miles", e.target.checked)} />
+                ANAマイル対象
+              </label>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <select className="border rounded px-2 py-1 w-full" value={row.paymentStatus || "未払い"} onChange={e => updateTransit(row.id, "paymentStatus", e.target.value)}>
+              <option>未払い</option>
+              <option>支払い済み</option>
+            </select>
+            {(row.paymentStatus || "未払い") === "未払い" && (
+              <input type="date" className="border rounded px-2 py-1 w-full" value={row.paymentDueDate || ""} onChange={e => updateTransit(row.id, "paymentDueDate", e.target.value)} title="支払い予定日" />
+            )}
+          </div>
+          <input className="border rounded px-2 py-1 w-full" placeholder="Googleマップのリンク" value={row.mapUrl || ""} onChange={e => updateTransit(row.id, "mapUrl", e.target.value)} />
+          <div className="flex gap-2">
+            <input className="border rounded px-2 py-1 w-full" placeholder="備考" value={row.memo} onChange={e => updateTransit(row.id, "memo", e.target.value)} />
+            <button onClick={() => removeTransit(row.id)} className="text-gray-300 hover:text-red-400 shrink-0"><Trash2 size={14} /></button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LocalTransportPage({ data, setData, itinerary, setItinerary }) {
+  const stays = itinerary.filter(d => d.type !== "transit" && d.city);
+  const update = (id, field, value) => setData(data.map(d => d.id === id ? { ...d, [field]: value } : d));
+  const remove = (id) => setData(data.filter(d => d.id !== id));
+  const addRow = (linkedStayId = null) => setData([...data, { id: uid(), linkedStayId, category: "移動", desc: "", address: "", fromAddress: "", toAddress: "", date: "", startTime: "", endTime: "", mode: "", price: 0, needsBooking: false, memo: "", paymentStatus: "未払い" }]);
+  const total = data.reduce((s, d) => s + (Number(d.price) || 0), 0);
+  const paidTotal = data.filter(d => d.paymentStatus === "支払い済み").reduce((s, d) => s + (Number(d.price) || 0), 0);
+  const unlinked = data.filter(d => d.linkedStayId == null || !stays.find(s => s.id === d.linkedStayId));
+  const CATS = ["移動", "ツアー", "入場券", "その他体験"];
+  const CAT_COLOR = { "移動": "#3E7C7B", "ツアー": "#D9A441", "入場券": "#C1584C", "その他体験": "#7C6FA0" };
+  const [expanded, setExpanded] = useState({});
+  const updateTransit = (id, field, value) => setItinerary(itinerary.map(d => d.id === id ? { ...d, [field]: value } : d));
+  const removeTransit = (id) => setItinerary(itinerary.filter(d => d.id !== id));
+
+  return (
+    <div>
+      <SectionHeader icon={Bus} title="現地手配" subtitle="移動（都市間・現地）とツアー・入場券などをまとめて1つのタイムラインで管理します" />
+      <div className="mb-4 p-4 rounded-lg" style={{ background: "#1E2A38", color: "#FAF6EF" }}>
+        <div className="text-xs opacity-70">現地手配 合計</div>
+        <div className="text-2xl font-bold">¥{total.toLocaleString()}</div>
+        <div className="flex gap-4 text-xs mt-1 opacity-80">
+          <span>支払い済み ¥{paidTotal.toLocaleString()}</span>
+          <span>未払い ¥{(total - paidTotal).toLocaleString()}</span>
+          <span>要予約 {data.filter(d => d.needsBooking).length}件</span>
+        </div>
+      </div>
+
+      <div className="relative pl-5">
+        <div className="absolute left-[7px] top-2 bottom-2 border-l-2 border-dashed" style={{ borderColor: "#D9CEB8" }} />
+        {itinerary.map(row => {
+          if (row.type === "transit") {
+            return <LocalTransitRow key={row.id} row={row} expanded={expanded} setExpanded={setExpanded} updateTransit={updateTransit} removeTransit={removeTransit} />;
+          }
+          if (!row.city) return null;
+          const items = data.filter(d => d.linkedStayId === row.id);
+          return (
+            <div key={row.id} className="relative mb-3">
+              <div className="absolute -left-5 top-1 w-3.5 h-3.5 rounded-full border-2" style={{ background: "#FAF6EF", borderColor: "#3E7C7B" }} />
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-sm" style={{ color: "#1E2A38" }}>{row.city}</span>
+                <span className="text-[10px]" style={{ color: "#9C9384" }}>{row.dates}</span>
+                <button onClick={() => addRow(row.id)} className="text-[10px] px-1.5 py-0.5 rounded text-white ml-auto" style={{ background: "#3E7C7B" }}>+ 追加</button>
+              </div>
+              {items.length > 0 && (
+                <div className="mt-1 pl-1 space-y-0.5">
+                  {items.map(item => <LocalRow key={item.id} row={item} update={update} remove={remove} CATS={CATS} CAT_COLOR={CAT_COLOR} />)}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {unlinked.length > 0 && (
+        <div className="mt-4 pt-3 border-t" style={{ borderColor: "#D9CEB8" }}>
+          <div className="text-xs mb-1" style={{ color: "#9C9384" }}>都市未設定</div>
+          <div className="space-y-1">
+            {unlinked.map(row => (
+              <div key={row.id} className="flex items-center gap-1.5 text-xs">
+                <select
+                  className="border rounded px-1 py-1 w-20 shrink-0"
+                  value={row.linkedStayId || ""}
+                  onChange={e => update(row.id, "linkedStayId", e.target.value ? Number(e.target.value) : null)}
+                >
+                  <option value="">都市</option>
+                  {stays.map(s => <option key={s.id} value={s.id}>{s.city}</option>)}
+                </select>
+                <LocalRow row={row} update={update} remove={remove} CATS={CATS} CAT_COLOR={CAT_COLOR} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <button onClick={() => addRow(null)} className="mt-4 flex items-center gap-1 text-sm px-3 py-2 rounded-lg text-white" style={{ background: "#3E7C7B" }}>
+        <Plus size={16} /> 項目を追加
+      </button>
+    </div>
+  );
+}
+
+function PackingPage({ data, setData }) {
+  const [newItem, setNewItem] = useState({});
+  const [bagFilter, setBagFilter] = useState("すべて");
+  const toggle = (cat, id) => {
+    setData({ ...data, [cat]: data[cat].map(i => i.id === id ? { ...i, checked: !i.checked } : i) });
+  };
+  const remove = (cat, id) => setData({ ...data, [cat]: data[cat].filter(i => i.id !== id) });
+  const updateBag = (cat, id, bag) => {
+    setData({ ...data, [cat]: data[cat].map(i => i.id === id ? { ...i, bag } : i) });
+  };
+  const add = (cat) => {
+    const name = (newItem[cat] || "").trim();
+    if (!name) return;
+    setData({ ...data, [cat]: [...data[cat], { id: uid(), name, checked: false, bag: BAGS[0] }] });
+    setNewItem({ ...newItem, [cat]: "" });
+  };
+
+  const bagCounts = BAGS.reduce((acc, b) => {
+    let total = 0, done = 0;
+    Object.values(data).forEach(items => items.forEach(i => { if (i.bag === b) { total++; if (i.checked) done++; } }));
+    acc[b] = { total, done };
+    return acc;
+  }, {});
+
+  return (
+    <div>
+      <SectionHeader icon={Backpack} title="持ち物リスト" subtitle="カテゴリごとにチェック、バッグごとの振り分けも管理できます" />
+
+      <div className="flex gap-2 flex-wrap mb-5">
+        {["すべて", ...BAGS].map(b => {
+          const active = bagFilter === b;
+          const count = b === "すべて" ? null : bagCounts[b];
+          return (
+            <button
+              key={b}
+              onClick={() => setBagFilter(b)}
+              className="text-sm px-3 py-1.5 rounded-full border"
+              style={{
+                background: active ? (BAG_COLOR[b] || "#1E2A38") : "#FFFDF8",
+                color: active ? "white" : "#1E2A38",
+                borderColor: BAG_COLOR[b] || "#D9CEB8",
+              }}
+            >
+              {b}{count ? `（${count.done}/${count.total}）` : ""}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        {Object.entries(data).map(([cat, items]) => {
+          const visibleItems = bagFilter === "すべて" ? items : items.filter(i => i.bag === bagFilter);
+          if (bagFilter !== "すべて" && visibleItems.length === 0) return null;
+          const doneCount = items.filter(i => i.checked).length;
+          return (
+            <div key={cat} className="rounded-lg border p-4" style={{ borderColor: "#D9CEB8", background: "#FFFDF8" }}>
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="font-semibold" style={{ color: "#1E2A38" }}>{cat}</h3>
+                <span className="text-xs px-2 py-0.5 rounded-full text-white" style={{ background: "#3E7C7B" }}>{doneCount}/{items.length}</span>
+              </div>
+              <ul className="space-y-1.5">
+                {visibleItems.map(i => (
+                  <li key={i.id} className="flex items-center gap-2 text-sm">
+                    <button onClick={() => toggle(cat, i.id)} className="w-5 h-5 rounded border flex items-center justify-center shrink-0" style={{ borderColor: "#3E7C7B", background: i.checked ? "#3E7C7B" : "transparent" }}>
+                      {i.checked && <Check size={14} color="white" />}
+                    </button>
+                    <span className={"flex-1 " + (i.checked ? "line-through opacity-50" : "")}>{i.name}</span>
+                    <select
+                      value={i.bag || BAGS[0]}
+                      onChange={e => updateBag(cat, i.id, e.target.value)}
+                      className="text-[11px] rounded-full px-2 py-0.5 border text-white shrink-0"
+                      style={{ background: BAG_COLOR[i.bag] || "#9C9384", borderColor: BAG_COLOR[i.bag] || "#9C9384" }}
+                    >
+                      {BAGS.map(b => <option key={b} value={b} style={{ color: "black", background: "white" }}>{b}</option>)}
+                    </select>
+                    <button onClick={() => remove(cat, i.id)} className="text-gray-300 hover:text-red-400 shrink-0"><Trash2 size={13} /></button>
+                  </li>
+                ))}
+              </ul>
+              <div className="flex gap-2 mt-2">
+                <input
+                  className="border rounded px-2 py-1 text-sm flex-1"
+                  placeholder="項目を追加"
+                  value={newItem[cat] || ""}
+                  onChange={e => setNewItem({ ...newItem, [cat]: e.target.value })}
+                  onKeyDown={e => e.key === "Enter" && add(cat)}
+                />
+                <button onClick={() => add(cat)} className="text-sm px-2 rounded text-white" style={{ background: "#3E7C7B" }}>追加</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TravelManager() {
+  const [tab, setTab] = useState("itinerary");
+  const [itinerary, setItinerary] = useState(seedItinerary);
+  const [hotels, setHotels] = useState(seedHotels);
+  const [localTransport, setLocalTransport] = useState(seedLocalTransport);
+  const [budget, setBudget] = useState(seedBudget);
+  const [totalBudget, setTotalBudget] = useState(900000);
+  const [packing, setPacking] = useState(seedPacking);
+  const [loaded, setLoaded] = useState(false);
+  const [saveState, setSaveState] = useState("idle");
+  const saveTimer = useRef(null);
+
+  const applyRemoteData = (d) => {
+    if (!d) return;
+    if (d.itinerary) setItinerary(d.itinerary);
+    if (d.hotels) setHotels(d.hotels);
+    if (d.localTransport) setLocalTransport(d.localTransport);
+    if (d.budget) setBudget(d.budget);
+    if (typeof d.totalBudget === "number") setTotalBudget(d.totalBudget);
+    if (d.packing) setPacking(d.packing);
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await storageGet(STORAGE_KEY);
+        if (res && res.value) {
+          applyRemoteData(JSON.parse(res.value));
+        }
+      } catch (e) {
+        // no existing data yet, use seed defaults
+      }
+      setLoaded(true);
+      // Firebase版（GitHub Pages）では、他端末での変更をリアルタイムで反映する
+      if (typeof window.subscribeToRemoteChanges === "function") {
+        window.subscribeToRemoteChanges((remote) => {
+          const active = document.activeElement;
+          if (active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return;
+          applyRemoteData(remote);
+        });
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    setSaveState("saving");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        const payload = JSON.stringify({ itinerary, hotels, localTransport, budget, totalBudget, packing });
+        const res = await storageSet(STORAGE_KEY, payload);
+        setSaveState(res ? "saved" : "error");
+      } catch (e) {
+        setSaveState("error");
+      }
+    }, 500);
+  }, [itinerary, hotels, localTransport, budget, totalBudget, packing, loaded]);
+
+  const hotelTotal = useMemo(() => hotels.reduce((s, h) => s + (Number(h.total) || 0), 0), [hotels]);
+  const localTransportTotal = useMemo(() => localTransport.filter(l => l.category === "移動").reduce((s, l) => s + (Number(l.price) || 0), 0), [localTransport]);
+  const localActivityTotal = useMemo(() => localTransport.filter(l => l.category !== "移動").reduce((s, l) => s + (Number(l.price) || 0), 0), [localTransport]);
+  const flightTotal = useMemo(() => itinerary.filter(d => d.type === "transit").reduce((s, f) => s + (Number(f.price) || 0), 0), [itinerary]);
+
+  // 日程表の滞在が増えたら、ホテルカードを自動生成する（ヨンショーピング＝姉宅は対象外）
+  useEffect(() => {
+    if (!loaded) return;
+    const needsHotel = itinerary.filter(d => d.type !== "transit" && d.city && !d.city.includes("ヨンショーピング"));
+    const linkedIds = new Set(hotels.map(h => h.linkedStayId).filter(id => id != null));
+    const missing = needsHotel.filter(s => !linkedIds.has(s.id));
+    if (missing.length > 0) {
+      setHotels(prev => [
+        ...prev,
+        ...missing.map(s => ({
+          id: uid(), linkedStayId: s.id, city: s.city, name: "", checkin: "", checkout: "", nights: "", guests: 1,
+          perNight: 0, total: 0, privateRoom: true, privateToilet: true, privateBathtub: true, evAvailable: false, cancelDeadline: "", site: "", url: "", confirmation: "", address: "", status: "候補", paymentStatus: "未払い",
+        })),
+      ]);
+    }
+  }, [itinerary, loaded, hotels.length]);
+
+  // 隣り合う2つの滞在の間に移動が無ければ、自動で「未定」の移動行を挿入する（日付は前後の滞在から自動計算）
+  useEffect(() => {
+    if (!loaded) return;
+    let inserted = false;
+    const next = [];
+    for (let i = 0; i < itinerary.length; i++) {
+      const cur = itinerary[i];
+      next.push(cur);
+      const nxt = itinerary[i + 1];
+      if (cur.type !== "transit" && cur.city && nxt && nxt.type !== "transit" && nxt.city) {
+        const boundaryDate = cur.startDate ? addDaysISO(cur.startDate, Math.max(1, Number(cur.nights) || 1)) : (nxt.startDate || "");
+        next.push({
+          id: uid(), type: "transit", mode: "未定", fromCity: cur.city, toCity: nxt.city,
+          departDate: boundaryDate, departTime: "", departTZ: 9, arriveDate: boundaryDate, arriveTime: "", arriveTZ: 9,
+          airline: "", transitStops: "", cls: "", price: 0, miles: false, memo: "自動生成（手段・時間を入力してください）", status: "候補", paymentStatus: "未払い",
+        });
+        inserted = true;
+      }
+    }
+    if (inserted) setItinerary(next);
+  }, [itinerary, loaded]);
+
+  // 既存の移動行で日付が空欄のものも、前の滞在から日付を補完する
+  useEffect(() => {
+    if (!loaded) return;
+    let filled = false;
+    const next = itinerary.map((row, i) => {
+      if (row.type === "transit" && !row.departDate) {
+        const prev = itinerary[i - 1];
+        if (prev && prev.type !== "transit" && prev.startDate) {
+          const boundaryDate = addDaysISO(prev.startDate, Math.max(1, Number(prev.nights) || 1));
+          filled = true;
+          return { ...row, departDate: boundaryDate, arriveDate: row.arriveDate || boundaryDate };
+        }
+      }
+      return row;
+    });
+    if (filled) setItinerary(next);
+  }, [itinerary, loaded]);
+
+  const [resetConfirming, setResetConfirming] = useState(false);
+  const resetAll = () => {
+    if (!resetConfirming) {
+      setResetConfirming(true);
+      setTimeout(() => setResetConfirming(false), 4000);
+      return;
+    }
+    setResetConfirming(false);
+    setItinerary(seedItinerary);
+    setHotels(seedHotels);
+    setLocalTransport(seedLocalTransport);
+    setBudget(seedBudget);
+    setTotalBudget(900000);
+    setPacking(seedPacking);
+  };
+
+  const exportData = () => {
+    const payload = { itinerary, hotels, localTransport, budget, totalBudget, packing, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const dateStr = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `travel-plan-${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // ---- Googleカレンダー用 .ics 書き出し ----
+  const icsEscape = (s) => String(s || "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+  const icsDateAllDay = (iso) => iso ? iso.replace(/-/g, "") : "";
+  const icsDateTimeUTC = (dateISO, time, tz) => {
+    if (!dateISO || !time) return null;
+    const d = new Date(`${dateISO}T${time}:00Z`).getTime() - (Number(tz) || 0) * 3600000;
+    const dt = new Date(d);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${dt.getUTCFullYear()}${pad(dt.getUTCMonth() + 1)}${pad(dt.getUTCDate())}T${pad(dt.getUTCHours())}${pad(dt.getUTCMinutes())}${pad(dt.getUTCSeconds())}Z`;
+  };
+  const buildICS = () => {
+    const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//TravelManager//JP", "CALSCALE:GREGORIAN"];
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+    let n = 0;
+
+    itinerary.forEach(row => {
+      n++;
+      if (row.type === "stay" && row.city && row.startDate) {
+        const nights = Math.max(1, Number(row.nights) || 1);
+        const endISO = addDaysISO(row.startDate, nights);
+        const linkedHotel = hotels.find(h => h.linkedStayId === row.id);
+        const location = linkedHotel && linkedHotel.address ? linkedHotel.address : row.city;
+        lines.push("BEGIN:VEVENT");
+        lines.push(`UID:tm-${row.id}-${n}@travelmanager`);
+        lines.push(`DTSTAMP:${stamp}`);
+        lines.push(`DTSTART;VALUE=DATE:${icsDateAllDay(row.startDate)}`);
+        lines.push(`DTEND;VALUE=DATE:${icsDateAllDay(endISO)}`);
+        lines.push(`SUMMARY:${icsEscape(row.city + "（滞在）")}`);
+        lines.push(`LOCATION:${icsEscape(location)}`);
+        lines.push(`DESCRIPTION:${icsEscape([row.status, row.memo, linkedHotel ? linkedHotel.name : ""].filter(Boolean).join(" / "))}`);
+        lines.push("END:VEVENT");
+      } else if (row.type === "transit" && (row.fromCity || row.toCity)) {
+        const dtStart = icsDateTimeUTC(row.departDate, row.departTime, row.departTZ);
+        const dtEnd = icsDateTimeUTC(row.arriveDate, row.arriveTime, row.arriveTZ) || dtStart;
+        lines.push("BEGIN:VEVENT");
+        lines.push(`UID:tm-${row.id}-${n}@travelmanager`);
+        lines.push(`DTSTAMP:${stamp}`);
+        if (dtStart) {
+          lines.push(`DTSTART:${dtStart}`);
+          lines.push(`DTEND:${dtEnd}`);
+        } else if (row.departDate) {
+          lines.push(`DTSTART;VALUE=DATE:${icsDateAllDay(row.departDate)}`);
+          lines.push(`DTEND;VALUE=DATE:${icsDateAllDay(row.departDate)}`);
+        } else {
+          lines.pop(); lines.pop(); lines.pop();
+          return;
+        }
+        lines.push(`SUMMARY:${icsEscape(`移動：${row.fromCity || "?"} → ${row.toCity || "?"}（${row.mode || ""}）`)}`);
+        lines.push(`LOCATION:${icsEscape(row.fromCity)}`);
+        lines.push(`DESCRIPTION:${icsEscape([row.airline, row.transitStops, row.status, Number(row.price) > 0 ? `¥${Number(row.price).toLocaleString()}` : "", row.memo].filter(Boolean).join(" / "))}`);
+        lines.push("END:VEVENT");
+      }
+    });
+
+    localTransport.filter(l => l.needsBooking).forEach(l => {
+      n++;
+      const stay = itinerary.find(s => s.id === l.linkedStayId);
+      if (!stay || !stay.startDate) return;
+      lines.push("BEGIN:VEVENT");
+      lines.push(`UID:tm-local-${l.id}-${n}@travelmanager`);
+      lines.push(`DTSTAMP:${stamp}`);
+      lines.push(`DTSTART;VALUE=DATE:${icsDateAllDay(stay.startDate)}`);
+      lines.push(`DTEND;VALUE=DATE:${icsDateAllDay(stay.startDate)}`);
+      lines.push(`SUMMARY:${icsEscape(`【要予約】${l.desc || l.category || "現地手配"}`)}`);
+      lines.push(`LOCATION:${icsEscape(stay.city)}`);
+      lines.push(`DESCRIPTION:${icsEscape([l.category, Number(l.price) > 0 ? `¥${Number(l.price).toLocaleString()}` : "", l.paymentStatus, l.memo].filter(Boolean).join(" / "))}`);
+      lines.push("END:VEVENT");
+    });
+
+    lines.push("END:VCALENDAR");
+    return lines.join("\r\n");
+  };
+  const exportICS = () => {
+    const blob = new Blob([buildICS()], { type: "text/calendar;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "travel-plan.ics";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const buildSummaryText = () => {
+    const lines = [];
+    lines.push("# 旅程サマリー（TravelManagerから共有）");
+    lines.push("");
+    lines.push("## 日程表");
+    itinerary.forEach(row => {
+      if (row.type === "transit") {
+        lines.push(`- [移動] ${row.fromCity || "?"} → ${row.toCity || "?"}　${row.mode || ""}　${fmtDate(row.departDate)} ${row.departTime || ""} → ${fmtDate(row.arriveDate)} ${row.arriveTime || ""}${row.airline ? `　${row.airline}` : ""}${Number(row.price) > 0 ? `　¥${Number(row.price).toLocaleString()}` : ""}${row.memo ? `　（${row.memo}）` : ""}`);
+      } else {
+        lines.push(`- [滞在] ${row.city || "?"}　${row.dates || ""}　${row.nights !== "" ? `${row.nights}泊` : ""}　${row.status || ""}${row.memo ? `　（${row.memo}）` : ""}`);
+      }
+    });
+    lines.push("");
+    lines.push("## ホテル");
+    if (hotels.length === 0) lines.push("（未登録）");
+    hotels.forEach(h => {
+      lines.push(`- ${h.city || "?"}：${h.name || "未定"}　${h.checkin || ""}〜${h.checkout || ""}（${h.nights || "?"}泊）　¥${Number(h.total || 0).toLocaleString()}　${h.status || ""}`);
+    });
+    lines.push("");
+    lines.push("## 現地手配");
+    if (localTransport.length === 0) lines.push("（未登録）");
+    localTransport.forEach(l => {
+      const stay = itinerary.find(s => s.id === l.linkedStayId);
+      lines.push(`- [${l.category || "移動"}] ${stay ? stay.city : "?"}：${l.desc || ""}　${l.mode || ""}　¥${Number(l.price || 0).toLocaleString()}　${l.paymentStatus || "未払い"}${l.needsBooking ? "　事前予約要" : ""}`);
+    });
+    lines.push("");
+    lines.push("## 予算");
+    lines.push(`総予算：¥${Number(totalBudget).toLocaleString()}`);
+    budget.forEach(b => {
+      const actual = b.auto ? (b.category.startsWith("移動費") ? flightTotal : b.category === "宿泊" ? hotelTotal : b.category === "現地交通" ? localTransportTotal : b.category === "観光・体験" ? localActivityTotal : 0) : Number(b.actual) || 0;
+      lines.push(`- ${b.category}：予算¥${Number(b.target || 0).toLocaleString()} / 実費¥${actual.toLocaleString()}`);
+    });
+    lines.push("");
+    lines.push("## 持ち物リスト");
+    Object.entries(packing).forEach(([cat, items]) => {
+      const done = items.filter(i => i.checked).length;
+      lines.push(`- ${cat}（${done}/${items.length}）：${items.map(i => `${i.name}${i.checked ? "✓" : ""}`).join("、")}`);
+    });
+    return lines.join("\n");
+  };
+
+  const [copyState, setCopyState] = useState("idle");
+  const copySummary = async () => {
+    const text = buildSummaryText();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyState("copied");
+    } catch (e) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        setCopyState("copied");
+      } catch (e2) {
+        setCopyState("error");
+      }
+    }
+    setTimeout(() => setCopyState("idle"), 2000);
+  };
+
+  const importFileRef = useRef(null);
+  const handleImportClick = () => importFileRef.current && importFileRef.current.click();
+  const [pendingImport, setPendingImport] = useState(null);
+  const [importError, setImportError] = useState("");
+  const handleImportFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const d = JSON.parse(ev.target.result);
+        setImportError("");
+        setPendingImport(d);
+      } catch (err) {
+        setPendingImport(null);
+        setImportError("ファイルの読み込みに失敗しました。書き出したJSONファイルを選んでください。");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+  const applyImport = () => {
+    const d = pendingImport;
+    if (!d) return;
+    if (d.itinerary) setItinerary(d.itinerary);
+    if (d.hotels) setHotels(d.hotels);
+    if (d.localTransport) setLocalTransport(d.localTransport);
+    if (d.budget) setBudget(d.budget);
+    if (typeof d.totalBudget === "number") setTotalBudget(d.totalBudget);
+    if (d.packing) setPacking(d.packing);
+    setPendingImport(null);
+  };
+
+  const tabs = [
+    { key: "itinerary", label: "日程表", icon: CalendarDays },
+    { key: "monthCalendar", label: "月表示", icon: CalendarDays },
+    { key: "weekCalendar", label: "週表示", icon: CalendarDays },
+    { key: "map", label: "地図", icon: MapPin },
+    { key: "hotels", label: "ホテル管理", icon: Hotel },
+    { key: "localTransport", label: "現地手配", icon: Bus },
+    { key: "budget", label: "金額管理", icon: Wallet },
+    { key: "packing", label: "持ち物リスト", icon: Backpack },
+  ];
+
+  return (
+    <div style={{ background: "#FAF6EF", minHeight: "100vh", fontFamily: "ui-sans-serif, system-ui, -apple-system, sans-serif" }}>
+      <div style={{ background: "#1E2A38" }} className="text-white px-4 sm:px-8 pt-6 pb-0">
+        <div className="flex justify-between items-start">
+          <div>
+            <div className="text-xs tracking-[0.2em] opacity-60">TRAVEL DOCUMENT</div>
+            <h1 className="text-3xl" style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}>ヨーロッパ周遊 旅程管理</h1>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={copySummary} className="flex items-center gap-1 text-xs opacity-70 hover:opacity-100">
+              <Copy size={14} /> {copyState === "copied" ? "コピーしました" : copyState === "error" ? "コピー失敗" : "AI共有用にコピー"}
+            </button>
+            <button onClick={exportData} className="flex items-center gap-1 text-xs opacity-70 hover:opacity-100">
+              <Download size={14} /> 書き出し
+            </button>
+            <button onClick={exportICS} className="flex items-center gap-1 text-xs opacity-70 hover:opacity-100">
+              <CalendarDays size={14} /> Googleカレンダー用
+            </button>
+            <button onClick={handleImportClick} className="flex items-center gap-1 text-xs opacity-70 hover:opacity-100">
+              <Upload size={14} /> 読み込み
+            </button>
+            <input ref={importFileRef} type="file" accept="application/json" onChange={handleImportFile} className="hidden" />
+            <button onClick={resetAll} className="flex items-center gap-1 text-xs" style={{ opacity: resetConfirming ? 1 : 0.7, color: resetConfirming ? "#D9A441" : "inherit" }}>
+              <RotateCcw size={14} /> {resetConfirming ? "もう一度押すとリセット" : "リセット"}
+            </button>
+          </div>
+        </div>
+        {pendingImport && (
+          <div className="mt-3 mb-1 p-3 rounded-lg flex items-center justify-between gap-3 text-xs" style={{ background: "#33465F" }}>
+            <span>ファイルを読み込みました。今のデータを上書きしますか？</span>
+            <div className="flex gap-2 shrink-0">
+              <button onClick={applyImport} className="px-3 py-1 rounded text-white" style={{ background: "#3E7C7B" }}>上書きする</button>
+              <button onClick={() => setPendingImport(null)} className="px-3 py-1 rounded" style={{ background: "rgba(255,255,255,0.15)" }}>キャンセル</button>
+            </div>
+          </div>
+        )}
+        {importError && (
+          <div className="mt-3 mb-1 p-2 rounded text-xs" style={{ background: "#5A3232", color: "#F5C6C6" }}>{importError}</div>
+        )}
+        <div className="flex gap-1 mt-5 overflow-x-auto">
+          {tabs.map(t => {
+            const Icon = t.icon;
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className="flex items-center gap-1.5 px-4 py-2.5 text-sm whitespace-nowrap rounded-t-lg"
+                style={{
+                  background: active ? "#FAF6EF" : "transparent",
+                  color: active ? "#1E2A38" : "rgba(255,255,255,0.7)",
+                  fontWeight: active ? 600 : 400,
+                }}
+              >
+                <Icon size={15} /> {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="px-4 sm:px-8 py-6 max-w-4xl mx-auto">
+        {tab === "itinerary" && <ItineraryPage data={itinerary} setData={setItinerary} />}
+        {tab === "map" && <MapPage data={itinerary} />}
+        {tab === "monthCalendar" && <MonthCalendarPage itinerary={itinerary} localTransport={localTransport} />}
+        {tab === "weekCalendar" && <WeekCalendarPage itinerary={itinerary} hotels={hotels} localTransport={localTransport} />}
+        {tab === "hotels" && <HotelsPage data={hotels} setData={setHotels} itinerary={itinerary} />}
+        {tab === "localTransport" && <LocalTransportPage data={localTransport} setData={setLocalTransport} itinerary={itinerary} setItinerary={setItinerary} />}
+        {tab === "budget" && (
+          <BudgetPage
+            data={budget}
+            setData={setBudget}
+            hotelTotal={hotelTotal}
+            flightTotal={flightTotal}
+            localTransportTotal={localTransportTotal}
+            localActivityTotal={localActivityTotal}
+            totalBudget={totalBudget}
+            setTotalBudget={setTotalBudget}
+          />
+        )}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+</script>
+
+<script>
+// ═══════════════════════════════════════════════
+//  FIREBASE 設定（kakeiboアプリと同じプロジェクトを使用）
+// ═══════════════════════════════════════════════
+const FIREBASE_CONFIG = {
+  apiKey:            "AIzaSyCiqQjJYf7Z0hPN65ZrGFhYXq488WogZoM",
+  authDomain:        "test-ecb93.firebaseapp.com",
+  databaseURL:       "https://test-ecb93-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:         "test-ecb93",
+  storageBucket:     "test-ecb93.firebasestorage.app",
+  messagingSenderId: "723106493500",
+  appId:             "1:723106493500:web:b8a1e33712bae2652dbf39"
+};
+
+// ログインを許可するGoogleアカウントのメールアドレス
+const ALLOWED_EMAIL = "genereoyuna@gmail.com";
+
+const STORAGE_KEY = "travel-manager-data";
+
+let fbAuth = null;
+let fbDb = null;
+
+firebase.initializeApp(FIREBASE_CONFIG);
+fbAuth = firebase.auth();
+fbDb = firebase.database();
+
+function showLoginScreen(errorMsg) {
+  document.getElementById('login-loading').style.display = 'none';
+  document.getElementById('root').innerHTML = '';
+  const ls = document.getElementById('login-screen');
+  ls.style.display = 'flex';
+  const err = document.getElementById('login-error');
+  if (errorMsg) { err.textContent = errorMsg; err.style.display = 'block'; }
+  else { err.style.display = 'none'; }
+}
+
+function signInWithGoogle() {
+  document.getElementById('login-loading').style.display = 'flex';
+  document.getElementById('login-screen').style.display = 'none';
+  fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider())
+    .catch(e => showLoginScreen('ログインに失敗しました: ' + e.message));
+}
+
+window.subscribeToRemoteChanges = function (callback) {
+  if (!window.__fbRef) return;
+  window.__fbRef.on('value', snap => {
+    const v = snap.val();
+    if (!v) return;
+    const json = JSON.stringify(v);
+    if (json === window.__fbLastSaved) return; // 自分の書き込みは無視
+    window.__fbLastSaved = json;
+    callback(v);
+  });
+};
+
+fbAuth.onAuthStateChanged(user => {
+  if (!user) {
+    document.getElementById('login-loading').style.display = 'none';
+    showLoginScreen();
+    return;
+  }
+
+  if (user.email !== ALLOWED_EMAIL) {
+    fbAuth.signOut();
+    showLoginScreen('このアカウント（' + user.email + '）はアクセスできません。');
+    return;
+  }
+
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('login-loading').style.display = 'flex';
+
+  window.__fbRef = fbDb.ref('travelManager/' + user.uid + '/' + STORAGE_KEY);
+
+  document.getElementById('login-loading').style.display = 'none';
+  root.render(React.createElement(TravelManager));
+});
+</script>
+</body>
+</html>
