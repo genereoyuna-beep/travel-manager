@@ -2138,6 +2138,16 @@ function TravelManager() {
             setTotalBudget={setTotalBudget}
           />
         )}
+        {tab === "packing" && <PackingPage data={packing} setData={setPacking} />}
+      </div>
+      <div className="text-center py-3 text-xs" style={{ color: "#B8AF9C" }}>
+        {saveState === "saving" && "保存中…"}
+        {saveState === "saved" && "保存済み ✓"}
+        {saveState === "error" && "保存失敗"}
+      </div>
+    </div>
+  );
+}
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 </script>
