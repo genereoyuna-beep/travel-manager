@@ -690,9 +690,182 @@ function AddressAutocomplete({ value, onChange, placeholder, className }) {
   );
 }
 
-function MonthCalendarPage({ itinerary, localTransport }) {
+const MEMBER_COLORS = ["#3E7C7B", "#D9A441", "#C1584C", "#7C6FA0", "#1E6B8A", "#5A8A6A"];
+
+function SplitPage({ participants, setParticipants, dayParticipants, itinerary, hotels, localTransport }) {
+  const [newName, setNewName] = useState("");
+
+  const addMember = () => {
+    const name = newName.trim();
+    if (!name || participants.includes(name)) return;
+    setParticipants([...participants, name]);
+    setNewName("");
+  };
+  const removeMember = (name) => setParticipants(participants.filter(p => p !== name));
+
+  // 日付ごとの参加者（設定なし日は全員）
+  const getMembers = (iso) => {
+    const m = dayParticipants[iso];
+    return (m && m.length > 0) ? m : participants;
+  };
+
+  // 各支出の人別コスト計算
+  const personCosts = useMemo(() => {
+    const costs = {};
+    participants.forEach(p => { costs[p] = 0; });
+
+    // ホテル: 泊数ごとに日付を特定して参加者で割る
+    hotels.forEach(h => {
+      const perNight = (Number(h.total) || 0) / Math.max(1, Number(h.nights) || 1);
+      const stay = itinerary.find(s => s.id === h.linkedStayId);
+      if (!stay || !stay.startDate) return;
+      const nights = Math.max(1, Number(h.nights) || 1);
+      for (let n = 0; n < nights; n++) {
+        const iso = addDaysISO(stay.startDate, n);
+        const members = getMembers(iso).filter(p => participants.includes(p));
+        if (members.length === 0) return;
+        const share = perNight / members.length;
+        members.forEach(p => { if (costs[p] !== undefined) costs[p] += share; });
+      }
+    });
+
+    // 移動（都市間）: 出発日の参加者で割る
+    itinerary.filter(d => d.type === "transit").forEach(t => {
+      if (!(Number(t.price) > 0) || !t.departDate) return;
+      const members = getMembers(t.departDate).filter(p => participants.includes(p));
+      if (members.length === 0) return;
+      const share = Number(t.price) / members.length;
+      members.forEach(p => { if (costs[p] !== undefined) costs[p] += share; });
+    });
+
+    // 現地手配: 実施日の参加者で割る
+    localTransport.forEach(l => {
+      if (!(Number(l.price) > 0) || !l.date) return;
+      const members = getMembers(l.date).filter(p => participants.includes(p));
+      if (members.length === 0) return;
+      const share = Number(l.price) / members.length;
+      members.forEach(p => { if (costs[p] !== undefined) costs[p] += share; });
+    });
+
+    return costs;
+  }, [participants, dayParticipants, hotels, itinerary, localTransport]);
+
+  // 最適精算（誰が誰にいくら払うか）
+  const settlements = useMemo(() => {
+    if (participants.length < 2) return [];
+    const total = Object.values(personCosts).reduce((s, v) => s + v, 0);
+    const avg = total / participants.length;
+    const balances = participants.map(p => ({ name: p, bal: personCosts[p] - avg }));
+    // 負債者と債権者に分けて最適化
+    const debtors = balances.filter(b => b.bal < -1).sort((a, b) => a.bal - b.bal);
+    const creditors = balances.filter(b => b.bal > 1).sort((a, b) => b.bal - a.bal);
+    const result = [];
+    let di = 0, ci = 0;
+    const d = debtors.map(b => ({ ...b }));
+    const c = creditors.map(b => ({ ...b }));
+    while (di < d.length && ci < c.length) {
+      const amount = Math.min(-d[di].bal, c[ci].bal);
+      result.push({ from: d[di].name, to: c[ci].name, amount: Math.round(amount) });
+      d[di].bal += amount;
+      c[ci].bal -= amount;
+      if (Math.abs(d[di].bal) < 1) di++;
+      if (Math.abs(c[ci].bal) < 1) ci++;
+    }
+    return result;
+  }, [personCosts, participants]);
+
+  return (
+    <div>
+      <SectionHeader icon={Wallet} title="精算" subtitle="参加者を登録し、月表示カレンダーで日ごとに参加者を設定すると人別コストを自動計算します" />
+
+      {/* 参加者管理 */}
+      <div className="mb-6 p-4 rounded-lg border" style={{ borderColor: "#D9CEB8", background: "#FFFDF8" }}>
+        <div className="text-sm font-semibold mb-3" style={{ color: "#1E2A38" }}>参加者</div>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {participants.map((p, pi) => (
+            <div key={p} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-white text-sm"
+              style={{ background: MEMBER_COLORS[pi % MEMBER_COLORS.length] }}>
+              {p}
+              <button onClick={() => removeMember(p)} className="opacity-70 hover:opacity-100 leading-none">×</button>
+            </div>
+          ))}
+          {participants.length === 0 && <span className="text-xs" style={{ color: "#9C9384" }}>まだ参加者がいません</span>}
+        </div>
+        <div className="flex gap-2">
+          <input className="border rounded px-3 py-1.5 text-sm flex-1" placeholder="名前を追加（例: Aさん）"
+            value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && addMember()} />
+          <button onClick={addMember} className="px-4 py-1.5 rounded text-sm text-white" style={{ background: "#3E7C7B" }}>追加</button>
+        </div>
+        {participants.length > 0 && (
+          <p className="text-xs mt-2" style={{ color: "#9C9384" }}>月表示カレンダーで各日の参加者をクリックして設定してください</p>
+        )}
+      </div>
+
+      {/* 人別コスト */}
+      {participants.length > 0 && (
+        <div className="mb-6 p-4 rounded-lg border" style={{ borderColor: "#D9CEB8", background: "#FFFDF8" }}>
+          <div className="text-sm font-semibold mb-3" style={{ color: "#1E2A38" }}>人別コスト</div>
+          <div className="space-y-2">
+            {participants.map((p, pi) => {
+              const cost = personCosts[p] || 0;
+              const total = Object.values(personCosts).reduce((s, v) => s + v, 0);
+              const pct = total > 0 ? cost / total : 0;
+              return (
+                <div key={p}>
+                  <div className="flex justify-between text-sm mb-0.5">
+                    <span className="font-medium" style={{ color: MEMBER_COLORS[pi % MEMBER_COLORS.length] }}>{p}</span>
+                    <span style={{ color: "#1E2A38" }}>¥{Math.round(cost).toLocaleString()}</span>
+                  </div>
+                  <div className="h-2 rounded-full" style={{ background: "#EEE9DF" }}>
+                    <div className="h-2 rounded-full" style={{ background: MEMBER_COLORS[pi % MEMBER_COLORS.length], width: `${pct * 100}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-3 pt-3 border-t flex justify-between text-sm font-semibold" style={{ borderColor: "#D9CEB8", color: "#1E2A38" }}>
+            <span>合計</span>
+            <span>¥{Math.round(Object.values(personCosts).reduce((s, v) => s + v, 0)).toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+
+      {/* 精算方法 */}
+      {settlements.length > 0 && (
+        <div className="p-4 rounded-lg border" style={{ borderColor: "#D9CEB8", background: "#FFFDF8" }}>
+          <div className="text-sm font-semibold mb-3" style={{ color: "#1E2A38" }}>精算方法（最小送金数）</div>
+          <div className="space-y-2">
+            {settlements.map((s, i) => {
+              const fi = participants.indexOf(s.from);
+              const ti = participants.indexOf(s.to);
+              return (
+                <div key={i} className="flex items-center gap-2 text-sm p-2 rounded-lg" style={{ background: "#EEE9DF" }}>
+                  <span className="font-semibold" style={{ color: MEMBER_COLORS[fi % MEMBER_COLORS.length] }}>{s.from}</span>
+                  <span style={{ color: "#9C9384" }}>→</span>
+                  <span className="font-semibold" style={{ color: MEMBER_COLORS[ti % MEMBER_COLORS.length] }}>{s.to}</span>
+                  <span className="ml-auto font-bold" style={{ color: "#1E2A38" }}>¥{s.amount.toLocaleString()}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {participants.length > 1 && settlements.length === 0 && (
+        <div className="p-4 rounded-lg text-sm text-center" style={{ color: "#9C9384" }}>全員の負担額が均等です</div>
+      )}
+    </div>
+  );
+}
+
+function MonthCalendarPage({ itinerary, localTransport, participants, dayParticipants, setDayParticipants }) {
   const stays = itinerary.filter(d => d.type !== "transit" && d.city && d.startDate);
   const transits = itinerary.filter(d => d.type === "transit");
+
+  const toggleParticipant = (iso, name) => {
+    const cur = dayParticipants[iso] || [];
+    const next = cur.includes(name) ? cur.filter(n => n !== name) : [...cur, name];
+    setDayParticipants({ ...dayParticipants, [iso]: next });
+  };
 
   const months = useMemo(() => {
     const start = new Date(CAL_START + "T00:00:00Z");
@@ -767,6 +940,20 @@ function MonthCalendarPage({ itinerary, localTransport }) {
                       <div className="mt-0.5 flex items-center gap-1">
                         <span className="px-1 rounded-full text-white" style={{ background: "#7C6FA0" }}>{localCount}件</span>
                         {bookingCount > 0 && <span className="px-1 rounded-full text-white" style={{ background: "#C1584C" }}>予約{bookingCount}</span>}
+                      </div>
+                    )}
+                    {inRange && participants.length > 0 && (
+                      <div className="mt-auto pt-0.5 flex flex-wrap gap-0.5">
+                        {participants.map((p, pi) => {
+                          const active = (dayParticipants[iso] || []).includes(p);
+                          return (
+                            <button key={p} title={p} onClick={() => toggleParticipant(iso, p)}
+                              className="rounded-full text-white leading-none"
+                              style={{ background: active ? MEMBER_COLORS[pi % MEMBER_COLORS.length] : "#D9CEB8", fontSize: 9, padding: "1px 4px" }}>
+                              {p.length <= 2 ? p : p.charAt(0)}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -1808,6 +1995,8 @@ function TravelManager({ isAdmin }) {
   const [budget, setBudget] = useState(seedBudget);
   const [totalBudget, setTotalBudget] = useState(900000);
   const [packing, setPacking] = useState(seedPacking);
+  const [participants, setParticipants] = useState([]);
+  const [dayParticipants, setDayParticipants] = useState({});
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState("idle");
   const saveTimer = useRef(null);
@@ -1820,6 +2009,8 @@ function TravelManager({ isAdmin }) {
     if (d.budget) setBudget(d.budget);
     if (typeof d.totalBudget === "number") setTotalBudget(d.totalBudget);
     if (d.packing) setPacking(d.packing);
+    if (d.participants) setParticipants(d.participants);
+    if (d.dayParticipants) setDayParticipants(d.dayParticipants);
   };
 
   useEffect(() => {
@@ -1850,14 +2041,14 @@ function TravelManager({ isAdmin }) {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        const payload = JSON.stringify({ itinerary, hotels, localTransport, budget, totalBudget, packing });
+        const payload = JSON.stringify({ itinerary, hotels, localTransport, budget, totalBudget, packing, participants, dayParticipants });
         const res = await storageSet(STORAGE_KEY, payload);
         setSaveState(res ? "saved" : "error");
       } catch (e) {
         setSaveState("error");
       }
     }, 500);
-  }, [itinerary, hotels, localTransport, budget, totalBudget, packing, loaded]);
+  }, [itinerary, hotels, localTransport, budget, totalBudget, packing, participants, dayParticipants, loaded]);
 
   const hotelTotal = useMemo(() => hotels.reduce((s, h) => s + (Number(h.total) || 0), 0), [hotels]);
   const localTransportTotal = useMemo(() => localTransport.filter(l => l.category === "移動").reduce((s, l) => s + (Number(l.price) || 0), 0), [localTransport]);
@@ -2143,6 +2334,7 @@ function TravelManager({ isAdmin }) {
     { key: "hotels", label: "ホテル管理", icon: Hotel },
     { key: "localTransport", label: "現地手配", icon: Bus },
     { key: "budget", label: "金額管理", icon: Wallet },
+    { key: "split", label: "精算", icon: Wallet },
     { key: "packing", label: "持ち物リスト", icon: Backpack },
   ];
 
@@ -2216,7 +2408,7 @@ function TravelManager({ isAdmin }) {
       <div className="px-4 sm:px-8 py-6 max-w-4xl mx-auto">
         {tab === "itinerary" && <ItineraryPage data={itinerary} setData={setItinerary} />}
         {tab === "map" && <MapPage data={itinerary} />}
-        {tab === "monthCalendar" && <MonthCalendarPage itinerary={itinerary} localTransport={localTransport} />}
+        {tab === "monthCalendar" && <MonthCalendarPage itinerary={itinerary} localTransport={localTransport} participants={participants} dayParticipants={dayParticipants} setDayParticipants={setDayParticipants} />}
         {tab === "weekCalendar" && <WeekCalendarPage itinerary={itinerary} hotels={hotels} localTransport={localTransport} />}
         {tab === "hotels" && <HotelsPage data={hotels} setData={setHotels} itinerary={itinerary} />}
         {tab === "localTransport" && <LocalTransportPage data={localTransport} setData={setLocalTransport} itinerary={itinerary} setItinerary={setItinerary} />}
@@ -2230,6 +2422,16 @@ function TravelManager({ isAdmin }) {
             localActivityTotal={localActivityTotal}
             totalBudget={totalBudget}
             setTotalBudget={setTotalBudget}
+          />
+        )}
+        {tab === "split" && (
+          <SplitPage
+            participants={participants}
+            setParticipants={setParticipants}
+            dayParticipants={dayParticipants}
+            itinerary={itinerary}
+            hotels={hotels}
+            localTransport={localTransport}
           />
         )}
         {tab === "packing" && <PackingPage data={packing} setData={setPacking} />}
