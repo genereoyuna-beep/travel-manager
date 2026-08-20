@@ -658,6 +658,8 @@ function Field({ label, children }) {
 function AddressAutocomplete({ value, onChange, placeholder, className }) {
   const inputRef = useRef(null);
   const acRef = useRef(null);
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onChangeRef.current = onChange; });
 
   useEffect(() => {
     const tryInit = () => {
@@ -668,7 +670,7 @@ function AddressAutocomplete({ value, onChange, placeholder, className }) {
       });
       acRef.current.addListener("place_changed", () => {
         const place = acRef.current.getPlace();
-        onChange(place.formatted_address || place.name || inputRef.current.value);
+        onChangeRef.current(place.formatted_address || place.name || inputRef.current.value);
       });
     };
     tryInit();
