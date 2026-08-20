@@ -695,6 +695,7 @@ const MEMBER_COLORS = ["#3E7C7B", "#D9A441", "#C1584C", "#7C6FA0", "#1E6B8A", "#
 function SplitPage({ participants, setParticipants, dayParticipants, itinerary, hotels, localTransport }) {
   const [newName, setNewName] = useState("");
   const [openPerson, setOpenPerson] = useState(null);
+  const [payer, setPayer] = useState(null);
 
   const addMember = () => {
     const name = newName.trim();
@@ -774,29 +775,18 @@ function SplitPage({ participants, setParticipants, dayParticipants, itinerary, 
     return c;
   }, [personData, participants]);
 
-  // 最適精算（誰が誰にいくら払うか）
+  // 立替者（未選択時は最高コスト者）
+  const effectivePayer = payer && participants.includes(payer)
+    ? payer
+    : participants.length > 0 ? participants.reduce((a, b) => (personCosts[a] || 0) >= (personCosts[b] || 0) ? a : b) : null;
+
+  // 精算：各自が自分のpersonCostを立替者に払う
   const settlements = useMemo(() => {
-    if (participants.length < 2) return [];
-    const total = Object.values(personCosts).reduce((s, v) => s + v, 0);
-    const avg = total / participants.length;
-    const balances = participants.map(p => ({ name: p, bal: personCosts[p] - avg }));
-    // 負債者と債権者に分けて最適化
-    const debtors = balances.filter(b => b.bal < -1).sort((a, b) => a.bal - b.bal);
-    const creditors = balances.filter(b => b.bal > 1).sort((a, b) => b.bal - a.bal);
-    const result = [];
-    let di = 0, ci = 0;
-    const d = debtors.map(b => ({ ...b }));
-    const c = creditors.map(b => ({ ...b }));
-    while (di < d.length && ci < c.length) {
-      const amount = Math.min(-d[di].bal, c[ci].bal);
-      result.push({ from: d[di].name, to: c[ci].name, amount: Math.round(amount) });
-      d[di].bal += amount;
-      c[ci].bal -= amount;
-      if (Math.abs(d[di].bal) < 1) di++;
-      if (Math.abs(c[ci].bal) < 1) ci++;
-    }
-    return result;
-  }, [personCosts, participants]);
+    if (!effectivePayer || participants.length < 2) return [];
+    return participants
+      .filter(p => p !== effectivePayer && (personCosts[p] || 0) > 0)
+      .map(p => ({ from: p, to: effectivePayer, amount: Math.round(personCosts[p]) }));
+  }, [personCosts, participants, effectivePayer]);
 
   return (
     <div>
@@ -885,9 +875,18 @@ function SplitPage({ participants, setParticipants, dayParticipants, itinerary, 
       )}
 
       {/* 精算方法 */}
-      {settlements.length > 0 && (
+      {participants.length > 1 && (
         <div className="p-4 rounded-lg border" style={{ borderColor: "#D9CEB8", background: "#FFFDF8" }}>
-          <div className="text-sm font-semibold mb-3" style={{ color: "#1E2A38" }}>精算方法（最小送金数）</div>
+          <div className="flex items-center justify-between mb-3 gap-3">
+            <div className="text-sm font-semibold" style={{ color: "#1E2A38" }}>精算方法</div>
+            <div className="flex items-center gap-2 text-xs" style={{ color: "#9C9384" }}>
+              <span className="whitespace-nowrap">立替者</span>
+              <select className="border rounded px-2 py-1 text-xs" style={{ borderColor: "#D9CEB8" }}
+                value={effectivePayer || ""} onChange={e => setPayer(e.target.value)}>
+                {participants.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+          </div>
           <div className="space-y-2">
             {settlements.map((s, i) => {
               const fi = participants.indexOf(s.from);
@@ -901,11 +900,11 @@ function SplitPage({ participants, setParticipants, dayParticipants, itinerary, 
                 </div>
               );
             })}
+            {settlements.length === 0 && (
+              <div className="text-sm text-center" style={{ color: "#9C9384" }}>精算なし</div>
+            )}
           </div>
         </div>
-      )}
-      {participants.length > 1 && settlements.length === 0 && (
-        <div className="p-4 rounded-lg text-sm text-center" style={{ color: "#9C9384" }}>全員の負担額が均等です</div>
       )}
     </div>
   );
