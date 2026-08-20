@@ -694,6 +694,7 @@ const MEMBER_COLORS = ["#3E7C7B", "#D9A441", "#C1584C", "#7C6FA0", "#1E6B8A", "#
 
 function SplitPage({ participants, setParticipants, dayParticipants, itinerary, hotels, localTransport }) {
   const [newName, setNewName] = useState("");
+  const [openPerson, setOpenPerson] = useState(null);
 
   const addMember = () => {
     const name = newName.trim();
@@ -709,12 +710,11 @@ function SplitPage({ participants, setParticipants, dayParticipants, itinerary, 
     return (m && m.length > 0) ? m : participants;
   };
 
-  // 各支出の人別コスト計算
-  const personCosts = useMemo(() => {
-    const costs = {};
-    participants.forEach(p => { costs[p] = 0; });
+  // 各支出の人別コスト計算（明細付き）
+  const personData = useMemo(() => {
+    const data = {};
+    participants.forEach(p => { data[p] = { total: 0, items: [] }; });
 
-    // ホテル: 泊数ごとに日付を特定して参加者で割る
     hotels.forEach(h => {
       const perNight = (Number(h.total) || 0) / Math.max(1, Number(h.nights) || 1);
       const stay = itinerary.find(s => s.id === h.linkedStayId);
@@ -725,30 +725,54 @@ function SplitPage({ participants, setParticipants, dayParticipants, itinerary, 
         const members = getMembers(iso).filter(p => participants.includes(p));
         if (members.length === 0) return;
         const share = perNight / members.length;
-        members.forEach(p => { if (costs[p] !== undefined) costs[p] += share; });
+        const label = `${h.name || "ホテル"} ${iso.slice(5).replace("-","/")} (${members.length}人割)`;
+        members.forEach(p => {
+          if (!data[p]) return;
+          data[p].total += share;
+          data[p].items.push({ label, amount: share, category: "ホテル", date: iso });
+        });
       }
     });
 
-    // 移動（都市間）: 出発日の参加者で割る
     itinerary.filter(d => d.type === "transit").forEach(t => {
       if (!(Number(t.price) > 0) || !t.departDate) return;
       const members = getMembers(t.departDate).filter(p => participants.includes(p));
       if (members.length === 0) return;
       const share = Number(t.price) / members.length;
-      members.forEach(p => { if (costs[p] !== undefined) costs[p] += share; });
+      const label = `${t.fromCity || ""}→${t.toCity || ""} ${t.departDate.slice(5).replace("-","/")} (${members.length}人割)`;
+      members.forEach(p => {
+        if (!data[p]) return;
+        data[p].total += share;
+        data[p].items.push({ label, amount: share, category: "交通", date: t.departDate });
+      });
     });
 
-    // 現地手配: 実施日の参加者で割る
     localTransport.forEach(l => {
       if (!(Number(l.price) > 0) || !l.date) return;
       const members = getMembers(l.date).filter(p => participants.includes(p));
       if (members.length === 0) return;
       const share = Number(l.price) / members.length;
-      members.forEach(p => { if (costs[p] !== undefined) costs[p] += share; });
+      const label = `${l.from || l.category || "現地手配"} ${l.date.slice(5).replace("-","/")} (${members.length}人割)`;
+      members.forEach(p => {
+        if (!data[p]) return;
+        data[p].total += share;
+        data[p].items.push({ label, amount: share, category: "現地", date: l.date });
+      });
     });
 
-    return costs;
+    // 日付順にソート
+    participants.forEach(p => {
+      if (data[p]) data[p].items.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    });
+
+    return data;
   }, [participants, dayParticipants, hotels, itinerary, localTransport]);
+
+  const personCosts = useMemo(() => {
+    const c = {};
+    participants.forEach(p => { c[p] = personData[p]?.total || 0; });
+    return c;
+  }, [personData, participants]);
 
   // 最適精算（誰が誰にいくら払うか）
   const settlements = useMemo(() => {
@@ -803,27 +827,57 @@ function SplitPage({ participants, setParticipants, dayParticipants, itinerary, 
 
       {/* 人別コスト */}
       {participants.length > 0 && (
-        <div className="mb-6 p-4 rounded-lg border" style={{ borderColor: "#D9CEB8", background: "#FFFDF8" }}>
-          <div className="text-sm font-semibold mb-3" style={{ color: "#1E2A38" }}>人別コスト</div>
-          <div className="space-y-2">
-            {participants.map((p, pi) => {
-              const cost = personCosts[p] || 0;
-              const total = Object.values(personCosts).reduce((s, v) => s + v, 0);
-              const pct = total > 0 ? cost / total : 0;
-              return (
-                <div key={p}>
-                  <div className="flex justify-between text-sm mb-0.5">
-                    <span className="font-medium" style={{ color: MEMBER_COLORS[pi % MEMBER_COLORS.length] }}>{p}</span>
-                    <span style={{ color: "#1E2A38" }}>¥{Math.round(cost).toLocaleString()}</span>
+        <div className="mb-6 rounded-lg border overflow-hidden" style={{ borderColor: "#D9CEB8" }}>
+          <div className="px-4 py-3 text-sm font-semibold" style={{ background: "#FFFDF8", color: "#1E2A38" }}>人別コスト</div>
+          {participants.map((p, pi) => {
+            const cost = personCosts[p] || 0;
+            const grandTotal = Object.values(personCosts).reduce((s, v) => s + v, 0);
+            const pct = grandTotal > 0 ? cost / grandTotal : 0;
+            const color = MEMBER_COLORS[pi % MEMBER_COLORS.length];
+            const isOpen = openPerson === p;
+            const items = personData[p]?.items || [];
+            return (
+              <div key={p} style={{ borderTop: "1px solid #EEE9DF" }}>
+                <button className="w-full text-left px-4 py-3" style={{ background: isOpen ? "#FBF9F5" : "#FFFDF8" }}
+                  onClick={() => setOpenPerson(isOpen ? null : p)}>
+                  <div className="flex justify-between text-sm mb-1.5">
+                    <span className="font-semibold" style={{ color }}>{p}</span>
+                    <span className="flex items-center gap-2">
+                      <span style={{ color: "#1E2A38" }}>¥{Math.round(cost).toLocaleString()}</span>
+                      <span style={{ color: "#9C9384", fontSize: 11 }}>{isOpen ? "▲" : "▼"}</span>
+                    </span>
                   </div>
-                  <div className="h-2 rounded-full" style={{ background: "#EEE9DF" }}>
-                    <div className="h-2 rounded-full" style={{ background: MEMBER_COLORS[pi % MEMBER_COLORS.length], width: `${pct * 100}%` }} />
+                  <div className="h-1.5 rounded-full" style={{ background: "#EEE9DF" }}>
+                    <div className="h-1.5 rounded-full" style={{ background: color, width: `${pct * 100}%` }} />
                   </div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="mt-3 pt-3 border-t flex justify-between text-sm font-semibold" style={{ borderColor: "#D9CEB8", color: "#1E2A38" }}>
+                </button>
+                {isOpen && (
+                  <div className="px-4 pb-3" style={{ background: "#FBF9F5" }}>
+                    {items.length === 0 ? (
+                      <p className="text-xs" style={{ color: "#9C9384" }}>明細なし</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {items.map((item, i) => (
+                          <div key={i} className="flex justify-between text-xs py-1" style={{ borderBottom: "1px solid #EEE9DF" }}>
+                            <div>
+                              <span className="px-1.5 py-0.5 rounded mr-1.5 text-white" style={{ fontSize: 9, background: item.category === "ホテル" ? "#3E7C7B" : item.category === "交通" ? "#D9A441" : "#7C6FA0" }}>{item.category}</span>
+                              {item.label}
+                            </div>
+                            <span className="ml-2 whitespace-nowrap font-medium" style={{ color: "#1E2A38" }}>¥{Math.round(item.amount).toLocaleString()}</span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between text-xs font-semibold pt-1" style={{ color: "#1E2A38" }}>
+                          <span>合計</span>
+                          <span>¥{Math.round(cost).toLocaleString()}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <div className="px-4 py-2.5 flex justify-between text-sm font-semibold" style={{ background: "#EEE9DF", color: "#1E2A38" }}>
             <span>合計</span>
             <span>¥{Math.round(Object.values(personCosts).reduce((s, v) => s + v, 0)).toLocaleString()}</span>
           </div>
